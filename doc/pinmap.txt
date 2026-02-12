@@ -1,0 +1,56 @@
+XIAO ESP32-C6 Pin Map
+=====================
+
+Board: Seeed Studio XIAO ESP32-C6
+Framework variant: XIAO_ESP32C6
+
+Digital pin mapping
+-------------------
+D0  -> GPIO0
+D1  -> GPIO1
+D2  -> GPIO2
+D3  -> GPIO21
+D4  -> GPIO22
+D5  -> GPIO23
+D6  -> GPIO16
+D7  -> GPIO17
+D8  -> GPIO19
+D9  -> GPIO20
+D10 -> GPIO18
+
+Analog pin mapping
+------------------
+A0 -> GPIO0
+A1 -> GPIO1
+A2 -> GPIO2
+
+Peripheral defaults
+-------------------
+LED_BUILTIN -> GPIO15
+UART TX     -> GPIO16
+UART RX     -> GPIO17
+I2C SDA     -> GPIO22
+I2C SCL     -> GPIO23
+SPI SS      -> GPIO21
+SPI MOSI    -> GPIO18
+SPI MISO    -> GPIO20
+SPI SCK     -> GPIO19
+
+Project-specific (this repo)
+----------------------------
+I2S MIC SERIAL CLOCK -> D6 (GPIO16)
+I2S MIC SERIAL DATA  -> D5 (GPIO23)
+
+Audio output (this repo)
+-----------------------
+PWM SPEAKER OUTPUT -> D0 (GPIO0)
+
+Xiaogyan I/O (this repo)
+------------------------
+LED MATRIX DIN  (TM1640) -> D10 (GPIO18)
+LED MATRIX SCLK (TM1640) -> D8  (GPIO19)
+ROTARY ENCODER A         -> D1  (GPIO1)
+ROTARY ENCODER B         -> D2  (GPIO2)
+STATUS LED               -> D6  (GPIO16)
+BUTTON A (PTT)           -> D9  (GPIO20)
+BUTTON B                 -> D7  (GPIO17)
