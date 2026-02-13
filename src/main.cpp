@@ -4,7 +4,6 @@
 
 #include <Arduino.h>
 #include <M5Unified.h>
-#include <nvs.h>
 #include <Preferences.h>
 
 #include "Application.h"
@@ -29,35 +28,14 @@ constexpr int kInfoW = 56;
 constexpr int kVolumeX = 8;
 constexpr int kRssiX = 71;
 
-void show_startup_color_bars()
-{
-    display_lock();
-    const int w = M5.Display.width();
-    const int h = M5.Display.height();
-    const int bar_w = w / 4;
-
-    const uint32_t c_red = RED;
-    const uint32_t c_green = GREEN;
-    const uint32_t c_blue = BLUE;
-    const uint32_t c_white = WHITE;
-
-    M5.Display.fillRect(0, 0, bar_w, h, c_red);
-    M5.Display.fillRect(bar_w, 0, bar_w, h, c_green);
-    M5.Display.fillRect(bar_w * 2, 0, bar_w, h, c_blue);
-    M5.Display.fillRect(bar_w * 3, 0, w - (bar_w * 3), h, c_white);
-    display_unlock();
-
-    delay(5000);
-}
-
 void draw_channel()
 {
     display_lock();
-    auto panel = M5.Display.color565(18, 32, 62);
-    auto accent = M5.Display.color565(90, 190, 255);
-    auto text = M5.Display.color565(235, 245, 255);
-    auto active = GREEN;
-    auto inactive = M5.Display.color565(160, 205, 255);
+    const uint16_t panel = M5.Display.color565(44, 52, 62);
+    const uint16_t accent = TFT_BLUE;
+    const uint16_t text = TFT_WHITE;
+    const uint16_t active = TFT_GREEN;
+    const uint16_t inactive = TFT_WHITE;
 
     M5.Display.fillRoundRect(kChannelX, kChannelY, kChannelW, kChannelH, 10, panel);
     M5.Display.drawRoundRect(kChannelX, kChannelY, kChannelW, kChannelH, 10, accent);
@@ -81,11 +59,11 @@ void draw_channel()
 void draw_volume()
 {
     display_lock();
-    auto panel = M5.Display.color565(18, 32, 62);
-    auto accent = M5.Display.color565(90, 190, 255);
-    auto text = M5.Display.color565(235, 245, 255);
-    auto sub = M5.Display.color565(160, 205, 255);
-    auto active = GREEN;
+    const uint16_t panel = M5.Display.color565(44, 52, 62);
+    const uint16_t accent = TFT_BLUE;
+    const uint16_t text = TFT_WHITE;
+    const uint16_t sub = TFT_WHITE;
+    const uint16_t active = TFT_GREEN;
 
     M5.Display.fillRoundRect(kVolumeX, kInfoY, kInfoW, kInfoH, 8, panel);
     M5.Display.drawRoundRect(kVolumeX, kInfoY, kInfoW, kInfoH, 8, accent);
@@ -107,8 +85,8 @@ void draw_volume()
 void draw_layout()
 {
     display_lock();
-    auto bg = M5.Display.color565(10, 18, 36);
-    auto accent = M5.Display.color565(90, 190, 255);
+    const uint16_t bg = M5.Display.color565(10, 18, 36);
+    const uint16_t accent = TFT_BLUE;
 
     M5.Display.fillScreen(bg);
 
@@ -118,7 +96,7 @@ void draw_layout()
     draw_volume();
 
     // RSSI value box (right side of info row)
-    auto panel = M5.Display.color565(18, 32, 62);
+    const uint16_t panel = M5.Display.color565(44, 52, 62);
     M5.Display.fillRoundRect(kRssiX, kInfoY, kInfoW, kInfoH, 8, panel);
     M5.Display.drawRoundRect(kRssiX, kInfoY, kInfoW, kInfoH, 8, accent);
 
@@ -133,20 +111,7 @@ void draw_layout()
 void setup()
 {
     Serial.begin(115200);
-
-    // Clear cached board autodetect result so M5GFX_BOARD is applied.
-    nvs_handle_t nvs_handle;
-    if (nvs_open("m5gfx", NVS_READWRITE, &nvs_handle) == ESP_OK) {
-        nvs_erase_key(nvs_handle, "AUTODETECT");
-        nvs_commit(nvs_handle);
-        nvs_close(nvs_handle);
-    }
-
-    auto cfg = M5.config();
-    cfg.fallback_board = m5::board_t::board_M5StickS3;
-    M5.begin(cfg);
-
-    M5.Display.setRotation(0);
+    M5.begin();
 
     prefs.begin("esptalkie", false);
     channel = prefs.getInt("channel", 1);

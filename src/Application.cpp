@@ -176,20 +176,18 @@ int16_t Application::getRSSI()
 void Application::dispRSSI(int16_t rssi)
 {
     display_lock();
-    // Panel color order workaround: logical GBR.
-    // GREEN -> (255,0,0), right side uses same color as receive status bar background.
-    const uint32_t kBarLeftOn = M5.Display.color565(255, 0, 0);
-    const uint32_t kBarRightOn = M5.Display.color565(0, 255, 0);
+    const uint16_t kBarLeftOn = TFT_GREEN;
+    const uint16_t kBarRightOn = TFT_RED;
     static const int16_t rssi_level[] = { -90, -80, -70, -60, -50, -40, -30, -20 };
-    auto panel = M5.Display.color565(18, 32, 62);
-    auto text = M5.Display.color565(235, 245, 255);
-    auto text_sub = M5.Display.color565(160, 205, 255);
-    auto bar_bg = M5.Display.color565(232, 250, 255);
-    auto bar_off = BLACK;
+    const uint16_t panel = M5.Display.color565(44, 52, 62);
+    const uint16_t text = M5.Display.color565(235, 245, 255);
+    const uint16_t text_sub = M5.Display.color565(160, 205, 255);
+    const uint16_t bar_bg = M5.Display.color565(232, 250, 255);
+    const uint16_t bar_off = TFT_BLACK;
 
     // RSSI numeric (info row, right)
     M5.Display.fillRoundRect(71, 122, 56, 44, 8, panel);
-    M5.Display.drawRoundRect(71, 122, 56, 44, 8, M5.Display.color565(90, 190, 255));
+    M5.Display.drawRoundRect(71, 122, 56, 44, 8, TFT_BLUE);
     M5.Display.setTextSize(1);
     M5.Display.setTextColor(text_sub, panel);
     M5.Display.setCursor(77, 130);
@@ -201,9 +199,9 @@ void Application::dispRSSI(int16_t rssi)
 
     // Level bar (bottom)
     M5.Display.fillRoundRect(8, 170, 119, 62, 8, bar_bg);
-    M5.Display.drawRoundRect(8, 170, 119, 62, 8, M5.Display.color565(90, 190, 255));
+    M5.Display.drawRoundRect(8, 170, 119, 62, 8, TFT_BLUE);
     M5.Display.setTextSize(1);
-    M5.Display.setTextColor(BLACK, bar_bg);
+    M5.Display.setTextColor(TFT_BLACK, bar_bg);
     M5.Display.setTextDatum(top_left);
     M5.Display.drawString("SIGNAL", 12, 173);
     const int base_y = 224;
@@ -214,7 +212,7 @@ void Application::dispRSSI(int16_t rssi)
         const int h = 6 + i * 5;
         const int x = 13 + i * (bar_w + gap);
         const int y = base_y - h;
-        uint32_t color = (rssi >= rssi_level[i]) ? ((i < 5) ? kBarLeftOn : kBarRightOn) : bar_off;
+        uint16_t color = (rssi >= rssi_level[i]) ? ((i < 5) ? kBarLeftOn : kBarRightOn) : bar_off;
         M5.Display.fillRoundRect(x, y, bar_w, h, 3, color);
     }
     M5.Display.setTextDatum(top_left);
@@ -224,11 +222,9 @@ void Application::dispRSSI(int16_t rssi)
 void Application::dispStatus(bool transmitting)
 {
     display_lock();
-    // Panel color order workaround: logical GBR.
-    // RED -> (0,0,255), BLUE -> (0,255,0)
-    const uint32_t status_color = transmitting
-        ? M5.Display.color565(0, 0, 255)
-        : M5.Display.color565(0, 255, 0);
+    const uint16_t status_color = transmitting
+        ? TFT_RED
+        : TFT_BLUE;
 
     M5.Display.fillRect(0, 0, M5.Display.width(), 22, status_color);
     M5.Display.setTextSize(2);
@@ -236,9 +232,9 @@ void Application::dispStatus(bool transmitting)
     const char* label = transmitting ? "Transmit" : "Receive";
     const int cx = M5.Display.width() / 2;
     const int cy = 11;
-    M5.Display.setTextColor(BLACK, status_color);
+    M5.Display.setTextColor(TFT_BLACK, status_color);
     M5.Display.drawString(label, cx + 1, cy + 1);
-    M5.Display.setTextColor(WHITE, status_color);
+    M5.Display.setTextColor(TFT_WHITE, status_color);
     M5.Display.drawString(label, cx, cy);
     M5.Display.setTextDatum(top_left);
     display_unlock();
@@ -247,15 +243,13 @@ void Application::dispStatus(bool transmitting)
 void Application::dispTxPower(int16_t dbm)
 {
     display_lock();
-    // Panel color order workaround: logical GBR.
-    // GREEN -> (255,0,0), right side uses same color as receive status bar background.
-    const uint32_t kBarLeftOn = M5.Display.color565(255, 0, 0);
-    const uint32_t kBarRightOn = M5.Display.color565(0, 255, 0);
-    auto panel = M5.Display.color565(18, 32, 62);
-    auto text = M5.Display.color565(235, 245, 255);
-    auto text_sub = M5.Display.color565(160, 205, 255);
-    auto bar_bg = M5.Display.color565(232, 250, 255);
-    auto bar_off = BLACK;
+    const uint16_t kBarLeftOn = TFT_GREEN;
+    const uint16_t kBarRightOn = TFT_RED;
+    const uint16_t panel = M5.Display.color565(44, 52, 62);
+    const uint16_t text = M5.Display.color565(235, 245, 255);
+    const uint16_t text_sub = M5.Display.color565(160, 205, 255);
+    const uint16_t bar_bg = M5.Display.color565(232, 250, 255);
+    const uint16_t bar_off = TFT_BLACK;
 
     int active_bars = dbm / 3;
     if (active_bars < 0) active_bars = 0;
@@ -263,7 +257,7 @@ void Application::dispTxPower(int16_t dbm)
 
     // Tx Power numeric (info row, right)
     M5.Display.fillRoundRect(71, 122, 56, 44, 8, panel);
-    M5.Display.drawRoundRect(71, 122, 56, 44, 8, M5.Display.color565(90, 190, 255));
+    M5.Display.drawRoundRect(71, 122, 56, 44, 8, TFT_BLUE);
     M5.Display.setTextSize(1);
     M5.Display.setTextColor(text_sub, panel);
     M5.Display.setCursor(73, 130);
@@ -275,9 +269,9 @@ void Application::dispTxPower(int16_t dbm)
 
     // Level bar (bottom)
     M5.Display.fillRoundRect(8, 170, 119, 62, 8, bar_bg);
-    M5.Display.drawRoundRect(8, 170, 119, 62, 8, M5.Display.color565(90, 190, 255));
+    M5.Display.drawRoundRect(8, 170, 119, 62, 8, TFT_BLUE);
     M5.Display.setTextSize(1);
-    M5.Display.setTextColor(BLACK, bar_bg);
+    M5.Display.setTextColor(TFT_BLACK, bar_bg);
     M5.Display.setTextDatum(top_left);
     M5.Display.drawString("POWER", 12, 173);
     const int base_y = 224;
@@ -287,7 +281,7 @@ void Application::dispTxPower(int16_t dbm)
         const int h = 6 + i * 5;
         const int x = 13 + i * (bar_w + gap);
         const int y = base_y - h;
-        uint32_t color = (i < active_bars) ? ((i < 5) ? kBarLeftOn : kBarRightOn) : bar_off;
+        uint16_t color = (i < active_bars) ? ((i < 5) ? kBarLeftOn : kBarRightOn) : bar_off;
         M5.Display.fillRoundRect(x, y, bar_w, h, 3, color);
     }
     M5.Display.setTextDatum(top_left);
