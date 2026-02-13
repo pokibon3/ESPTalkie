@@ -20,11 +20,9 @@ static void promiscuous_rx_cb(void *buf, wifi_promiscuous_pkt_type_t type)
     instance->setRSSI(ppkt->rx_ctrl.rssi);
 }
 
-void receiveCallback(const esp_now_recv_info_t *recvInfo, const uint8_t *data, int dataLen)
+void receiveCallback(const uint8_t *macAddr, const uint8_t *data, int dataLen)
 {
-    if (recvInfo && recvInfo->rx_ctrl) {
-      instance->setRSSI(recvInfo->rx_ctrl->rssi);
-    }
+    (void)macAddr;
     int header_size = instance->m_header_size;
     // first m_header_size bytes of m_buffer are the expected header
     if ((dataLen > header_size) && (dataLen<=MAX_ESP_NOW_PACKET_SIZE) && (memcmp(data,instance->m_buffer,header_size) == 0)) {

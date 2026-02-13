@@ -14,7 +14,7 @@ protected:
 public:
     EspNowTransport(OutputBuffer *output_buffer, uint8_t wifi_channel);
     virtual bool begin() override;
-    friend void receiveCallback(const esp_now_recv_info_t *recvInfo, const uint8_t *data, int dataLen);
+    friend void receiveCallback(const uint8_t *macAddr, const uint8_t *data, int dataLen);
     void        setRSSI(int16_t rssi) { m_rssi = rssi;}
     int16_t     getRSSI(void) override;
     uint16_t    getWifiChannel(void) { return m_wifi_channel;}

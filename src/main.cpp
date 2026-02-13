@@ -29,21 +29,42 @@ constexpr int kInfoW = 56;
 constexpr int kVolumeX = 8;
 constexpr int kRssiX = 71;
 
+void show_startup_color_bars()
+{
+    display_lock();
+    const int w = M5.Display.width();
+    const int h = M5.Display.height();
+    const int bar_w = w / 4;
+
+    const uint32_t c_red = RED;
+    const uint32_t c_green = GREEN;
+    const uint32_t c_blue = BLUE;
+    const uint32_t c_white = WHITE;
+
+    M5.Display.fillRect(0, 0, bar_w, h, c_red);
+    M5.Display.fillRect(bar_w, 0, bar_w, h, c_green);
+    M5.Display.fillRect(bar_w * 2, 0, bar_w, h, c_blue);
+    M5.Display.fillRect(bar_w * 3, 0, w - (bar_w * 3), h, c_white);
+    display_unlock();
+
+    delay(5000);
+}
+
 void draw_channel()
 {
     display_lock();
     auto panel = M5.Display.color565(18, 32, 62);
     auto accent = M5.Display.color565(90, 190, 255);
     auto text = M5.Display.color565(235, 245, 255);
-    auto active = BLUE;
+    auto active = GREEN;
     auto inactive = M5.Display.color565(160, 205, 255);
 
     M5.Display.fillRoundRect(kChannelX, kChannelY, kChannelW, kChannelH, 10, panel);
     M5.Display.drawRoundRect(kChannelX, kChannelY, kChannelW, kChannelH, 10, accent);
     M5.Display.setTextColor(volume_mode ? inactive : active, panel);
     M5.Display.setTextSize(1);
-    M5.Display.setTextDatum(top_center);
-    M5.Display.drawString("CHANNEL", kChannelX + (kChannelW / 2), kChannelY + 6);
+    M5.Display.setTextDatum(top_left);
+    M5.Display.drawString("CHANNEL", kChannelX + 8, kChannelY + 6);
 
     M5.Display.setTextColor(volume_mode ? text : active, panel);
     M5.Display.setFont(&fonts::Font7);
@@ -64,8 +85,7 @@ void draw_volume()
     auto accent = M5.Display.color565(90, 190, 255);
     auto text = M5.Display.color565(235, 245, 255);
     auto sub = M5.Display.color565(160, 205, 255);
-    auto active = BLUE;
-    auto mode_color = volume_mode ? M5.Display.color565(110, 230, 150) : M5.Display.color565(255, 200, 120);
+    auto active = GREEN;
 
     M5.Display.fillRoundRect(kVolumeX, kInfoY, kInfoW, kInfoH, 8, panel);
     M5.Display.drawRoundRect(kVolumeX, kInfoY, kInfoW, kInfoH, 8, accent);
@@ -75,14 +95,12 @@ void draw_volume()
     M5.Display.print("VOL");
 
     M5.Display.setTextColor(volume_mode ? active : text, panel);
-    M5.Display.setTextSize(2);
-    M5.Display.setCursor(kVolumeX + 14, kInfoY + 22);
-    M5.Display.printf("%d", volume_level);
-
-    M5.Display.setTextSize(1);
-    M5.Display.setTextColor(mode_color, panel);
-    M5.Display.setCursor(kVolumeX + 34, kInfoY + 30);
-    M5.Display.print(volume_mode ? "VOL" : "CH");
+    M5.Display.setTextSize(3);
+    M5.Display.setTextDatum(middle_center);
+    char vol_text[4];
+    snprintf(vol_text, sizeof(vol_text), "%d", volume_level);
+    M5.Display.drawString(vol_text, kVolumeX + (kInfoW / 2), kInfoY + (kInfoH / 2) + 8);
+    M5.Display.setTextDatum(top_left);
     display_unlock();
 }
 

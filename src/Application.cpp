@@ -177,9 +177,9 @@ void Application::dispRSSI(int16_t rssi)
 {
     display_lock();
     // Panel color order workaround: logical GBR.
-    // GREEN -> (255,0,0), YELLOW -> (255,0,255)
+    // GREEN -> (255,0,0), right side uses same color as receive status bar background.
     const uint32_t kBarLeftOn = M5.Display.color565(255, 0, 0);
-    const uint32_t kBarRightOn = M5.Display.color565(255, 0, 255);
+    const uint32_t kBarRightOn = M5.Display.color565(0, 255, 0);
     static const int16_t rssi_level[] = { -90, -80, -70, -60, -50, -40, -30, -20 };
     auto panel = M5.Display.color565(18, 32, 62);
     auto text = M5.Display.color565(235, 245, 255);
@@ -248,9 +248,9 @@ void Application::dispTxPower(int16_t dbm)
 {
     display_lock();
     // Panel color order workaround: logical GBR.
-    // GREEN -> (255,0,0), YELLOW -> (255,0,255)
+    // GREEN -> (255,0,0), right side uses same color as receive status bar background.
     const uint32_t kBarLeftOn = M5.Display.color565(255, 0, 0);
-    const uint32_t kBarRightOn = M5.Display.color565(255, 0, 255);
+    const uint32_t kBarRightOn = M5.Display.color565(0, 255, 0);
     auto panel = M5.Display.color565(18, 32, 62);
     auto text = M5.Display.color565(235, 245, 255);
     auto text_sub = M5.Display.color565(160, 205, 255);
@@ -278,8 +278,8 @@ void Application::dispTxPower(int16_t dbm)
     M5.Display.drawRoundRect(8, 170, 119, 62, 8, M5.Display.color565(90, 190, 255));
     M5.Display.setTextSize(1);
     M5.Display.setTextColor(BLACK, bar_bg);
-    M5.Display.setTextDatum(top_center);
-    M5.Display.drawString("POWER", 67, 173);
+    M5.Display.setTextDatum(top_left);
+    M5.Display.drawString("POWER", 12, 173);
     const int base_y = 224;
     const int bar_w = 11;
     const int gap = 3;
