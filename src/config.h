@@ -8,6 +8,8 @@
 #define USE_ESP_NOW
 // sample rate for the system
 #define SAMPLE_RATE 16000
+// ESP-NOW Long Range mode
+#define ESPNOW_LONG_RANGE
 
 // Which channel is the I2S microphone on? I2S_CHANNEL_FMT_ONLY_LEFT or I2S_CHANNEL_FMT_ONLY_RIGHT
 // Generally they will default to LEFT - but you may need to attach the L/R pin to GND
