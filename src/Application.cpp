@@ -73,6 +73,94 @@ static void apply_octave_up_simple_u8_block(uint8_t *buf, size_t n)
     memcpy(prev, curr, n);
 }
 
+static void apply_triple_speed_simple_u8_block(uint8_t *buf, size_t n)
+{
+    // Compress 3 chunks worth of timeline (prev2 + prev1 + current) into current chunk size.
+    // This raises pitch and speech speed by about 3x with very low CPU cost.
+    static uint8_t prev2[256];
+    static uint8_t prev1[256];
+    static uint8_t curr[256];
+    static uint8_t history_count = 0;
+
+    if (!buf || n == 0 || n > sizeof(prev1)) {
+        return;
+    }
+
+    memcpy(curr, buf, n);
+    if (history_count < 2) {
+        if (history_count == 0) {
+            memcpy(prev1, curr, n);
+        } else {
+            memcpy(prev2, prev1, n);
+            memcpy(prev1, curr, n);
+        }
+        ++history_count;
+        return;
+    }
+
+    for (size_t i = 0; i < n; ++i) {
+        const size_t src = i * 3;
+        if (src < n) {
+            buf[i] = prev2[src];
+        } else if (src < (2 * n)) {
+            buf[i] = prev1[src - n];
+        } else {
+            buf[i] = curr[src - (2 * n)];
+        }
+    }
+
+    memcpy(prev2, prev1, n);
+    memcpy(prev1, curr, n);
+}
+
+static void apply_quad_speed_simple_u8_block(uint8_t *buf, size_t n)
+{
+    // Compress 4 chunks of timeline (prev3 + prev2 + prev1 + current) into current chunk size.
+    // This raises pitch and speech speed by about 4x with very low CPU cost.
+    static uint8_t prev3[256];
+    static uint8_t prev2[256];
+    static uint8_t prev1[256];
+    static uint8_t curr[256];
+    static uint8_t history_count = 0;
+
+    if (!buf || n == 0 || n > sizeof(prev1)) {
+        return;
+    }
+
+    memcpy(curr, buf, n);
+    if (history_count < 3) {
+        if (history_count == 0) {
+            memcpy(prev1, curr, n);
+        } else if (history_count == 1) {
+            memcpy(prev2, prev1, n);
+            memcpy(prev1, curr, n);
+        } else {
+            memcpy(prev3, prev2, n);
+            memcpy(prev2, prev1, n);
+            memcpy(prev1, curr, n);
+        }
+        ++history_count;
+        return;
+    }
+
+    for (size_t i = 0; i < n; ++i) {
+        const size_t src = i * 4;
+        if (src < n) {
+            buf[i] = prev3[src];
+        } else if (src < (2 * n)) {
+            buf[i] = prev2[src - n];
+        } else if (src < (3 * n)) {
+            buf[i] = prev1[src - (2 * n)];
+        } else {
+            buf[i] = curr[src - (3 * n)];
+        }
+    }
+
+    memcpy(prev3, prev2, n);
+    memcpy(prev2, prev1, n);
+    memcpy(prev1, curr, n);
+}
+
 static void dump_mic_wav_to_spiffs_10s()
 {
     if (!SPIFFS.begin(true)) {
@@ -407,6 +495,10 @@ void Application::loop()
 #if AUDIO_DIAG_SOURCE == AUDIO_DIAG_SRC_MIC
 #if TX_PITCH_MODE == TX_PITCH_MODE_OCTAVE_UP_SIMPLE
                     apply_octave_up_simple_u8_block(mic_samples_u8, send_samples);
+#elif TX_PITCH_MODE == TX_PITCH_MODE_TRIPLE_SPEED_SIMPLE
+                    apply_triple_speed_simple_u8_block(mic_samples_u8, send_samples);
+#elif TX_PITCH_MODE == TX_PITCH_MODE_QUAD_SPEED_SIMPLE
+                    apply_quad_speed_simple_u8_block(mic_samples_u8, send_samples);
 #endif
                     for (size_t i = 0; i < send_samples; ++i) {
                         m_transport->add_sample_u8(mic_samples_u8[i]);

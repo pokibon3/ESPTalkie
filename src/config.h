@@ -51,7 +51,9 @@
 // Transmit pitch effect mode
 #define TX_PITCH_MODE_NONE               0
 #define TX_PITCH_MODE_OCTAVE_UP_SIMPLE   1
-#define TX_PITCH_MODE                    TX_PITCH_MODE_OCTAVE_UP_SIMPLE
+#define TX_PITCH_MODE_TRIPLE_SPEED_SIMPLE 2
+#define TX_PITCH_MODE_QUAD_SPEED_SIMPLE  3
+#define TX_PITCH_MODE                    TX_PITCH_MODE_TRIPLE_SPEED_SIMPLE
 
 // M5Unified external speaker selector
 #if TALKIE_TARGET_M5ATOMS3_ECHO_BASE
