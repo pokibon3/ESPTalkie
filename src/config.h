@@ -66,3 +66,29 @@
 #define MIC_WAV_DUMP_TO_SPIFFS  0
 #define MIC_WAV_DUMP_SECONDS    10
 
+// Horizontal shake to change current setting (same effect as BtnB click)
+#define SHAKE_SWITCH_ENABLED     1
+#define SHAKE_SENSITIVITY_LOW    1
+#define SHAKE_SENSITIVITY_MID    2
+#define SHAKE_SENSITIVITY_HIGH   3
+#define SHAKE_SENSITIVITY_LEVEL  SHAKE_SENSITIVITY_MID
+
+#if SHAKE_SENSITIVITY_LEVEL == SHAKE_SENSITIVITY_LOW
+#define SHAKE_X_THRESHOLD_G      1.60f
+#define SHAKE_X_DOMINANCE_G      0.38f
+#define SHAKE_REARM_G            0.90f
+#elif SHAKE_SENSITIVITY_LEVEL == SHAKE_SENSITIVITY_HIGH
+#define SHAKE_X_THRESHOLD_G      1.10f
+#define SHAKE_X_DOMINANCE_G      0.20f
+#define SHAKE_REARM_G            0.60f
+#else
+#define SHAKE_X_THRESHOLD_G      1.35f
+#define SHAKE_X_DOMINANCE_G      0.30f
+#define SHAKE_REARM_G            0.75f
+#endif
+#define SHAKE_Y_THRESHOLD_G      SHAKE_X_THRESHOLD_G
+#define SHAKE_Y_DOMINANCE_G      SHAKE_X_DOMINANCE_G
+#define SHAKE_Z_THRESHOLD_G      SHAKE_X_THRESHOLD_G
+#define SHAKE_Z_DOMINANCE_G      SHAKE_X_DOMINANCE_G
+#define SHAKE_COOLDOWN_MS        450
+

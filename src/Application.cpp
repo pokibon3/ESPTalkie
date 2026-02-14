@@ -161,6 +161,17 @@ static void apply_quad_speed_simple_u8_block(uint8_t *buf, size_t n)
     memcpy(prev1, curr, n);
 }
 
+static uint8_t default_pitch_mode_from_config()
+{
+#if TX_PITCH_MODE == TX_PITCH_MODE_OCTAVE_UP_SIMPLE
+    return Application::kTxPitchModeM2;
+#elif TX_PITCH_MODE == TX_PITCH_MODE_TRIPLE_SPEED_SIMPLE
+    return Application::kTxPitchModeM3;
+#else
+    return Application::kTxPitchModeM1;
+#endif
+}
+
 static void dump_mic_wav_to_spiffs_10s()
 {
     if (!SPIFFS.begin(true)) {
@@ -216,7 +227,8 @@ Application::Application() :
     m_transport(nullptr),
     m_output_buffer(nullptr),
     m_channel(ESP_NOW_WIFI_CHANNEL),
-    m_speaker_volume(132)
+    m_speaker_volume(132),
+    m_tx_pitch_mode(default_pitch_mode_from_config())
 {
     m_output_buffer = new OutputBuffer(300 * 16);
     m_transport = new EspNowTransport(m_output_buffer, static_cast<uint8_t>(m_channel));
@@ -270,6 +282,19 @@ void Application::setSpeakerVolume(uint8_t volume)
 uint8_t Application::getSpeakerVolume() const
 {
     return m_speaker_volume;
+}
+
+void Application::setTxPitchMode(uint8_t mode)
+{
+    if (mode < kTxPitchModeM1 || mode > kTxPitchModeM3) {
+        mode = kTxPitchModeM1;
+    }
+    m_tx_pitch_mode = mode;
+}
+
+uint8_t Application::getTxPitchMode() const
+{
+    return m_tx_pitch_mode;
 }
 
 int16_t Application::getRSSI()
@@ -493,13 +518,16 @@ void Application::loop()
 
                 if (ready) {
 #if AUDIO_DIAG_SOURCE == AUDIO_DIAG_SRC_MIC
-#if TX_PITCH_MODE == TX_PITCH_MODE_OCTAVE_UP_SIMPLE
-                    apply_octave_up_simple_u8_block(mic_samples_u8, send_samples);
-#elif TX_PITCH_MODE == TX_PITCH_MODE_TRIPLE_SPEED_SIMPLE
-                    apply_triple_speed_simple_u8_block(mic_samples_u8, send_samples);
-#elif TX_PITCH_MODE == TX_PITCH_MODE_QUAD_SPEED_SIMPLE
-                    apply_quad_speed_simple_u8_block(mic_samples_u8, send_samples);
-#endif
+                    switch (m_tx_pitch_mode) {
+                        case kTxPitchModeM2:
+                            apply_octave_up_simple_u8_block(mic_samples_u8, send_samples);
+                            break;
+                        case kTxPitchModeM3:
+                            apply_triple_speed_simple_u8_block(mic_samples_u8, send_samples);
+                            break;
+                        default:
+                            break;
+                    }
                     for (size_t i = 0; i < send_samples; ++i) {
                         m_transport->add_sample_u8(mic_samples_u8[i]);
                     }
