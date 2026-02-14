@@ -10,6 +10,7 @@
 #include "DisplaySync.h"
 #include "EspNowTransport.h"
 #include "OutputBuffer.h"
+#include "UiLayout.h"
 #include "config.h"
 
 namespace {
@@ -44,6 +45,34 @@ static void write_wav_header(File &f, uint32_t sample_rate, uint16_t bits_per_sa
     f.write(reinterpret_cast<const uint8_t *>(&data_bytes), 4);
 }
 
+static void apply_octave_up_simple_u8_block(uint8_t *buf, size_t n)
+{
+    // Naive chipmunk shift:
+    // Compress 2 chunks worth of timeline (prev + current) into current chunk size.
+    // This raises pitch and speech speed by about +1 octave with very low CPU cost.
+    static bool has_prev = false;
+    static uint8_t prev[256];
+    static uint8_t curr[256];
+
+    if (!buf || n == 0 || n > sizeof(prev)) {
+        return;
+    }
+
+    memcpy(curr, buf, n);
+    if (!has_prev) {
+        memcpy(prev, curr, n);
+        has_prev = true;
+        return;
+    }
+
+    for (size_t i = 0; i < n; ++i) {
+        const size_t src = i * 2;
+        buf[i] = (src < n) ? prev[src] : curr[src - n];
+    }
+
+    memcpy(prev, curr, n);
+}
+
 static void dump_mic_wav_to_spiffs_10s()
 {
     if (!SPIFFS.begin(true)) {
@@ -58,7 +87,7 @@ static void dump_mic_wav_to_spiffs_10s()
     write_wav_header(f, SAMPLE_RATE, 16, 1, 0);
 
     auto mic_cfg = M5.Mic.config();
-    mic_cfg.magnification = 20;
+    mic_cfg.magnification = MIC_MAGNIFICATION;
     mic_cfg.over_sampling = 2;
     M5.Mic.config(mic_cfg);
 
@@ -121,7 +150,7 @@ void Application::begin()
 
 #if AUDIO_DIAG_SOURCE == AUDIO_DIAG_SRC_MIC
     auto mic_cfg = M5.Mic.config();
-    mic_cfg.magnification = 20;
+    mic_cfg.magnification = MIC_MAGNIFICATION;
     mic_cfg.over_sampling = 2;
     M5.Mic.config(mic_cfg);
 #endif
@@ -130,19 +159,6 @@ void Application::begin()
     dump_mic_wav_to_spiffs_10s();
 #endif
 
-    // Explicit M5StickS3 speaker route to avoid board auto-detect mismatch.
-    auto spk_cfg = M5.Speaker.config();
-    spk_cfg.pin_mck = GPIO_NUM_18;
-    spk_cfg.pin_bck = GPIO_NUM_17;
-    spk_cfg.pin_ws = GPIO_NUM_15;
-    spk_cfg.pin_data_out = GPIO_NUM_14;
-    spk_cfg.i2s_port = I2S_NUM_0;
-    spk_cfg.sample_rate = SAMPLE_RATE;
-    spk_cfg.stereo = true;
-    spk_cfg.magnification = 1;
-    spk_cfg.buzzer = false;
-    spk_cfg.use_dac = false;
-    M5.Speaker.config(spk_cfg);
     M5.Speaker.begin();
     M5.Speaker.setVolume(m_speaker_volume);
     M5.Speaker.tone(1200, 80);
@@ -186,34 +202,38 @@ void Application::dispRSSI(int16_t rssi)
     const uint16_t bar_off = TFT_BLACK;
 
     // RSSI numeric (info row, right)
-    M5.Display.fillRoundRect(71, 122, 56, 44, 8, panel);
-    M5.Display.drawRoundRect(71, 122, 56, 44, 8, TFT_BLUE);
+    M5.Display.fillRoundRect(kUiLayout.rssi_x, kUiLayout.info_y, kUiLayout.info_w, kUiLayout.info_h, kUiLayout.info_radius, panel);
+    M5.Display.drawRoundRect(kUiLayout.rssi_x, kUiLayout.info_y, kUiLayout.info_w, kUiLayout.info_h, kUiLayout.info_radius, TFT_BLUE);
     M5.Display.setTextSize(1);
     M5.Display.setTextColor(text_sub, panel);
-    M5.Display.setCursor(77, 130);
+    M5.Display.setCursor(kUiLayout.rssi_label_x, kUiLayout.rssi_label_y);
+#if TALKIE_TARGET_M5ATOMS3_ECHO_BASE
+    M5.Display.print("RS");
+#else
     M5.Display.print("RSSI");
-    M5.Display.setTextSize(2);
+#endif
+    M5.Display.setTextSize(kUiLayout.rssi_value_text_size);
     M5.Display.setTextColor(text, panel);
-    M5.Display.setCursor(77, 145);
+    M5.Display.setCursor(kUiLayout.rssi_value_x, kUiLayout.rssi_value_y);
     M5.Display.printf("%d", rssi);
 
     // Level bar (bottom)
-    M5.Display.fillRoundRect(8, 170, 119, 62, 8, bar_bg);
-    M5.Display.drawRoundRect(8, 170, 119, 62, 8, TFT_BLUE);
+    M5.Display.fillRoundRect(kUiLayout.bar_x, kUiLayout.bar_y, kUiLayout.bar_w, kUiLayout.bar_h, kUiLayout.bar_radius, bar_bg);
+    M5.Display.drawRoundRect(kUiLayout.bar_x, kUiLayout.bar_y, kUiLayout.bar_w, kUiLayout.bar_h, kUiLayout.bar_radius, TFT_BLUE);
     M5.Display.setTextSize(1);
     M5.Display.setTextColor(TFT_BLACK, bar_bg);
     M5.Display.setTextDatum(top_left);
-    M5.Display.drawString("SIGNAL", 12, 173);
-    const int base_y = 224;
-    const int bar_w = 11;
-    const int gap = 3;
+    M5.Display.drawString("SIGNAL", kUiLayout.bar_label_x, kUiLayout.bar_label_y);
+    const int base_y = kUiLayout.bar_base_y;
+    const int bar_w = kUiLayout.bar_col_w;
+    const int gap = kUiLayout.bar_col_gap;
 
     for (int i = 0; i < 8; ++i) {
-        const int h = 6 + i * 5;
-        const int x = 13 + i * (bar_w + gap);
+        const int h = kUiLayout.bar_min_h + i * kUiLayout.bar_step_h;
+        const int x = kUiLayout.bar_start_x + i * (bar_w + gap);
         const int y = base_y - h;
         uint16_t color = (rssi >= rssi_level[i]) ? ((i < 5) ? kBarLeftOn : kBarRightOn) : bar_off;
-        M5.Display.fillRoundRect(x, y, bar_w, h, 3, color);
+        M5.Display.fillRoundRect(x, y, bar_w, h, kUiLayout.bar_col_radius, color);
     }
     M5.Display.setTextDatum(top_left);
     display_unlock();
@@ -226,12 +246,29 @@ void Application::dispStatus(bool transmitting)
         ? TFT_RED
         : TFT_BLUE;
 
-    M5.Display.fillRect(0, 0, M5.Display.width(), 22, status_color);
-    M5.Display.setTextSize(2);
+    M5.Display.fillRect(0, 0, M5.Display.width(), kUiLayout.status_h, status_color);
+    M5.Display.setFont(&fonts::Font0);
     M5.Display.setTextDatum(middle_center);
     const char* label = transmitting ? "Transmit" : "Receive";
     const int cx = M5.Display.width() / 2;
-    const int cy = 11;
+    const int cy = kUiLayout.status_h / 2;
+
+#if TALKIE_TARGET_M5ATOMS3_ECHO_BASE
+    int best_size = 1;
+    for (int s = 1; s <= 6; ++s) {
+        M5.Display.setTextSize(s);
+        const int text_w = M5.Display.textWidth(label);
+        const int text_h = M5.Display.fontHeight();
+        if (text_w <= (M5.Display.width() - 4) && text_h <= (kUiLayout.status_h - 2)) {
+            best_size = s;
+        } else {
+            break;
+        }
+    }
+    M5.Display.setTextSize(best_size);
+#else
+    M5.Display.setTextSize(kUiLayout.status_text_size);
+#endif
     M5.Display.setTextColor(TFT_BLACK, status_color);
     M5.Display.drawString(label, cx + 1, cy + 1);
     M5.Display.setTextColor(TFT_WHITE, status_color);
@@ -256,33 +293,33 @@ void Application::dispTxPower(int16_t dbm)
     if (active_bars > 8) active_bars = 8;
 
     // Tx Power numeric (info row, right)
-    M5.Display.fillRoundRect(71, 122, 56, 44, 8, panel);
-    M5.Display.drawRoundRect(71, 122, 56, 44, 8, TFT_BLUE);
+    M5.Display.fillRoundRect(kUiLayout.rssi_x, kUiLayout.info_y, kUiLayout.info_w, kUiLayout.info_h, kUiLayout.info_radius, panel);
+    M5.Display.drawRoundRect(kUiLayout.rssi_x, kUiLayout.info_y, kUiLayout.info_w, kUiLayout.info_h, kUiLayout.info_radius, TFT_BLUE);
     M5.Display.setTextSize(1);
     M5.Display.setTextColor(text_sub, panel);
-    M5.Display.setCursor(73, 130);
+    M5.Display.setCursor(kUiLayout.tx_label_x, kUiLayout.tx_label_y);
     M5.Display.print("TXdBm");
-    M5.Display.setTextSize(2);
+    M5.Display.setTextSize(kUiLayout.tx_value_text_size);
     M5.Display.setTextColor(text, panel);
-    M5.Display.setCursor(75, 145);
+    M5.Display.setCursor(kUiLayout.tx_value_x, kUiLayout.tx_value_y);
     M5.Display.printf("%d", dbm);
 
     // Level bar (bottom)
-    M5.Display.fillRoundRect(8, 170, 119, 62, 8, bar_bg);
-    M5.Display.drawRoundRect(8, 170, 119, 62, 8, TFT_BLUE);
+    M5.Display.fillRoundRect(kUiLayout.bar_x, kUiLayout.bar_y, kUiLayout.bar_w, kUiLayout.bar_h, kUiLayout.bar_radius, bar_bg);
+    M5.Display.drawRoundRect(kUiLayout.bar_x, kUiLayout.bar_y, kUiLayout.bar_w, kUiLayout.bar_h, kUiLayout.bar_radius, TFT_BLUE);
     M5.Display.setTextSize(1);
     M5.Display.setTextColor(TFT_BLACK, bar_bg);
     M5.Display.setTextDatum(top_left);
-    M5.Display.drawString("POWER", 12, 173);
-    const int base_y = 224;
-    const int bar_w = 11;
-    const int gap = 3;
+    M5.Display.drawString("POWER", kUiLayout.bar_label_x, kUiLayout.bar_label_y);
+    const int base_y = kUiLayout.bar_base_y;
+    const int bar_w = kUiLayout.bar_col_w;
+    const int gap = kUiLayout.bar_col_gap;
     for (int i = 0; i < 8; ++i) {
-        const int h = 6 + i * 5;
-        const int x = 13 + i * (bar_w + gap);
+        const int h = kUiLayout.bar_min_h + i * kUiLayout.bar_step_h;
+        const int x = kUiLayout.bar_start_x + i * (bar_w + gap);
         const int y = base_y - h;
         uint16_t color = (i < active_bars) ? ((i < 5) ? kBarLeftOn : kBarRightOn) : bar_off;
-        M5.Display.fillRoundRect(x, y, bar_w, h, 3, color);
+        M5.Display.fillRoundRect(x, y, bar_w, h, kUiLayout.bar_col_radius, color);
     }
     M5.Display.setTextDatum(top_left);
     display_unlock();
@@ -368,6 +405,9 @@ void Application::loop()
 
                 if (ready) {
 #if AUDIO_DIAG_SOURCE == AUDIO_DIAG_SRC_MIC
+#if TX_PITCH_MODE == TX_PITCH_MODE_OCTAVE_UP_SIMPLE
+                    apply_octave_up_simple_u8_block(mic_samples_u8, send_samples);
+#endif
                     for (size_t i = 0; i < send_samples; ++i) {
                         m_transport->add_sample_u8(mic_samples_u8[i]);
                     }

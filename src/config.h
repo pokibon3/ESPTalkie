@@ -2,12 +2,26 @@
 #include <driver/i2s.h>
 #include <driver/gpio.h>
 
+// Build target selection (set from platformio.ini build_flags)
+#if defined(TARGET_M5ATOMS3_ECHO_BASE)
+#define TALKIE_TARGET_M5ATOMS3_ECHO_BASE 1
+#else
+#define TALKIE_TARGET_M5ATOMS3_ECHO_BASE 0
+#endif
+
 // WiFi credentials
 //#define WIFI_SSID 
 //#define WIFI_PSWD 
 #define USE_ESP_NOW
 // sample rate for the system
 #define SAMPLE_RATE 16000
+
+// Microphone gain
+#if TALKIE_TARGET_M5ATOMS3_ECHO_BASE
+#define MIC_MAGNIFICATION 28
+#else
+#define MIC_MAGNIFICATION 20
+#endif
 // ESP-NOW Long Range mode
 #define ESPNOW_LONG_RANGE
 
@@ -33,6 +47,18 @@
 #define AUDIO_DIAG_SRC_SILENCE  1
 #define AUDIO_DIAG_SRC_TONE     2
 #define AUDIO_DIAG_SOURCE       AUDIO_DIAG_SRC_MIC
+
+// Transmit pitch effect mode
+#define TX_PITCH_MODE_NONE               0
+#define TX_PITCH_MODE_OCTAVE_UP_SIMPLE   1
+#define TX_PITCH_MODE                    TX_PITCH_MODE_OCTAVE_UP_SIMPLE
+
+// M5Unified external speaker selector
+#if TALKIE_TARGET_M5ATOMS3_ECHO_BASE
+#define M5UNIFIED_USE_ATOMIC_ECHO_BASE 1
+#else
+#define M5UNIFIED_USE_ATOMIC_ECHO_BASE 0
+#endif
 
 // Mic WAV dump (diagnostic)
 #define MIC_WAV_DUMP_TO_SPIFFS  0
