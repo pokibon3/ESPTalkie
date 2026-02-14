@@ -34,6 +34,10 @@ M5StickS3で動作する、WiFi音声トランシーバのサンプルコード�
   - `BtnB` クリック: `VOL/CH` の現在モード値を変更
   - `BtnB` 長押し: `VOL/CH` モードを切替
 
+## バージョン履歴
+- v1.0: 新規作成
+- v1.1: M5AtomS3 + Atomic Echo Base対応、ケロケロボイス対応
+
 ## ライセンス
 　MIT License
 
