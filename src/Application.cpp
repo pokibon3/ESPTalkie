@@ -172,6 +172,74 @@ static uint8_t default_pitch_mode_from_config()
 #endif
 }
 
+#if TALKIE_TARGET_M5STICKS3
+static void draw_battery_status_icon(uint16_t status_color)
+{
+    int32_t battery_level = M5.Power.getBatteryLevel();
+    if (battery_level < 0) battery_level = 0;
+    if (battery_level > 100) battery_level = 100;
+
+    static bool charging_display = false;
+    static m5::Power_Class::is_charging_t charging_candidate = m5::Power_Class::charge_unknown;
+    static uint8_t charging_candidate_count = 0;
+    constexpr uint8_t kChargeDebounceCount = 3;
+
+    auto charging_raw = M5.Power.isCharging();
+    if (charging_raw == m5::Power_Class::charge_unknown) {
+        charging_raw = charging_display ? m5::Power_Class::is_charging : m5::Power_Class::is_discharging;
+    }
+    if (charging_raw == charging_candidate) {
+        if (charging_candidate_count < kChargeDebounceCount) {
+            ++charging_candidate_count;
+        }
+    } else {
+        charging_candidate = charging_raw;
+        charging_candidate_count = 1;
+    }
+    if (charging_candidate_count >= kChargeDebounceCount) {
+        charging_display = (charging_candidate == m5::Power_Class::is_charging);
+    }
+
+    const bool charging = charging_display;
+    const uint16_t outline_color = charging ? TFT_YELLOW : TFT_WHITE;
+    const uint16_t fill_color = charging ? TFT_YELLOW : status_color;
+
+    const int term_w = 2;
+    const int body_w = 25;
+    const int body_h = 14;
+    const int margin_r = 3;
+    const int x = M5.Display.width() - margin_r - term_w - body_w;
+    const int y = (kUiLayout.status_h - body_h) / 2;
+    const int inner_x = x + 1;
+    const int inner_y = y + 1;
+    const int inner_w = body_w - 2;
+    const int inner_h = body_h - 2;
+
+    M5.Display.fillRect(inner_x, inner_y, inner_w, inner_h, fill_color);
+    M5.Display.drawRect(x, y, body_w, body_h, outline_color);
+    M5.Display.fillRect(x + body_w, y + (body_h / 3), term_w, body_h / 3, outline_color);
+
+    char batt_text[4];
+    snprintf(batt_text, sizeof(batt_text), "%ld", static_cast<long>(battery_level));
+
+    M5.Display.setFont(&fonts::Font0);
+    M5.Display.setTextSize(1);
+    M5.Display.setTextDatum(middle_center);
+    const int tx = x + (body_w / 2);
+    const int ty = y + (body_h / 2);
+    if (charging) {
+        M5.Display.setTextColor(TFT_BLACK, fill_color);
+        M5.Display.drawString(batt_text, tx, ty);
+    } else {
+        M5.Display.setTextColor(TFT_BLACK, fill_color);
+        M5.Display.drawString(batt_text, tx + 1, ty + 1);
+        M5.Display.setTextColor(TFT_WHITE, fill_color);
+        M5.Display.drawString(batt_text, tx, ty);
+    }
+    M5.Display.setTextDatum(top_left);
+}
+#endif
+
 static void dump_mic_wav_to_spiffs_10s()
 {
     if (!SPIFFS.begin(true)) {
@@ -363,7 +431,12 @@ void Application::dispStatus(bool transmitting)
     M5.Display.setFont(&fonts::Font0);
     M5.Display.setTextDatum(middle_center);
     const char* label = transmitting ? "Transmit" : "Receive";
-    const int cx = M5.Display.width() / 2;
+    int status_text_area_w = M5.Display.width();
+#if TALKIE_TARGET_M5STICKS3
+    constexpr int kBatteryAreaW = 31;  // battery icon + right margin on StickS3
+    status_text_area_w -= kBatteryAreaW;
+#endif
+    const int cx = status_text_area_w / 2;
     const int cy = kUiLayout.status_h / 2;
 
 #if TALKIE_TARGET_M5ATOMS3_ECHO_BASE
@@ -386,6 +459,9 @@ void Application::dispStatus(bool transmitting)
     M5.Display.drawString(label, cx + 1, cy + 1);
     M5.Display.setTextColor(TFT_WHITE, status_color);
     M5.Display.drawString(label, cx, cy);
+#if TALKIE_TARGET_M5STICKS3
+    draw_battery_status_icon(status_color);
+#endif
     M5.Display.setTextDatum(top_left);
     display_unlock();
 }
@@ -491,6 +567,7 @@ void Application::loop()
                 if (enable_rssi_overlay) {
                     uint32_t now = millis();
                     if (now - last_rssi_draw_ms >= 500) {
+                        dispStatus(true);
                         int8_t tx_qdbm = 0;
                         if (esp_wifi_get_max_tx_power(&tx_qdbm) == ESP_OK) {
                             dispTxPower(tx_qdbm / 4);
@@ -565,6 +642,7 @@ void Application::loop()
             if (enable_rssi_overlay) {
                 uint32_t now = millis();
                 if (now - last_rssi_draw_ms >= 500) {  // lower UI refresh load
+                    dispStatus(false);
                     dispRSSI(getRSSI());
                     last_rssi_draw_ms = now;
                 }

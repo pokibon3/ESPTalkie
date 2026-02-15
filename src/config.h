@@ -9,6 +9,12 @@
 #define TALKIE_TARGET_M5ATOMS3_ECHO_BASE 0
 #endif
 
+#if defined(TARGET_M5STICKS3)
+#define TALKIE_TARGET_M5STICKS3 1
+#else
+#define TALKIE_TARGET_M5STICKS3 0
+#endif
+
 // WiFi credentials
 //#define WIFI_SSID 
 //#define WIFI_PSWD 

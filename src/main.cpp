@@ -24,7 +24,7 @@ enum class EditMode : uint8_t {
     Channel = 2,
     Mode = 3,
 };
-EditMode edit_mode = EditMode::Volume;
+EditMode edit_mode = EditMode::None;
 uint32_t mode_selected_at_ms = 0;
 constexpr uint8_t kVolumeTable[5] = { 44, 66, 88, 110, 132 };
 Preferences prefs;
@@ -62,29 +62,47 @@ ShakeAction detect_shake_action()
     const float ay = fabsf(imu.accel.y);
     const float az = fabsf(imu.accel.z);
     const uint32_t now = millis();
+    // Map IMU axes to logical horizontal/vertical based on current display orientation.
+    float horizontal_axis = ax;
+    float vertical_axis = ay;
+    if (M5.Display.height() > M5.Display.width()) {
+        horizontal_axis = ay;
+        vertical_axis = ax;
+    }
     const bool strong_horizontal =
-        (ax >= SHAKE_X_THRESHOLD_G) &&
-        (ax > (ay + SHAKE_X_DOMINANCE_G)) &&
-        (ax > (az + SHAKE_X_DOMINANCE_G));
+        (horizontal_axis >= SHAKE_X_THRESHOLD_G) &&
+        (horizontal_axis > (vertical_axis + SHAKE_X_DOMINANCE_G)) &&
+        (horizontal_axis > (az + SHAKE_X_DOMINANCE_G));
     const bool strong_vertical =
-        (ay >= SHAKE_Y_THRESHOLD_G) &&
-        (ay > (ax + SHAKE_Y_DOMINANCE_G)) &&
-        (ay > (az + SHAKE_Y_DOMINANCE_G));
+        (vertical_axis >= SHAKE_Y_THRESHOLD_G) &&
+        (vertical_axis > (horizontal_axis + SHAKE_Y_DOMINANCE_G)) &&
+        (vertical_axis > (az + SHAKE_Y_DOMINANCE_G));
+    // Make mode-switch shake (depth axis) less sensitive than up/down adjustments.
+    constexpr float kModeSwitchExtraThresholdG = 1.80f;
+    constexpr float kModeSwitchExtraDominanceG = 0.90f;
     const bool strong_depth =
-        (az >= SHAKE_Z_THRESHOLD_G) &&
-        (az > (ax + SHAKE_Z_DOMINANCE_G)) &&
-        (az > (ay + SHAKE_Z_DOMINANCE_G));
+        (az >= (SHAKE_Z_THRESHOLD_G + kModeSwitchExtraThresholdG)) &&
+        (az > (ax + SHAKE_Z_DOMINANCE_G + kModeSwitchExtraDominanceG)) &&
+        (az > (ay + SHAKE_Z_DOMINANCE_G + kModeSwitchExtraDominanceG));
 
     if (ax < SHAKE_REARM_G && ay < SHAKE_REARM_G && az < SHAKE_REARM_G) {
         armed = true;
     }
-    if (armed && (strong_horizontal || strong_vertical || strong_depth) && (now - last_trigger_ms >= SHAKE_COOLDOWN_MS)) {
+#if TALKIE_TARGET_M5STICKS3
+    const bool shake_triggered = (strong_horizontal || strong_vertical);
+#else
+    const bool shake_triggered = (strong_horizontal || strong_vertical || strong_depth);
+#endif
+    if (armed && shake_triggered && (now - last_trigger_ms >= SHAKE_COOLDOWN_MS)) {
         armed = false;
         last_trigger_ms = now;
+#if !TALKIE_TARGET_M5STICKS3
         if (strong_depth && az >= ax && az >= ay) {
             return ShakeAction::SwitchMode;
         }
-        if (strong_horizontal && (!strong_vertical || ax >= ay)) {
+#endif
+        // Horizontal=Increase, Vertical=Decrease (display orientation aware).
+        if (strong_horizontal && (!strong_vertical || horizontal_axis >= vertical_axis)) {
             return ShakeAction::Increase;
         }
         return ShakeAction::Decrease;
@@ -316,11 +334,13 @@ void loop()
             volume_level = wrapped_step(volume_level, 1, 5, delta);
             application->setSpeakerVolume(kVolumeTable[volume_level - 1]);
             prefs.putInt("volume", volume_level);
+            mode_selected_at_ms = millis();
             draw_volume();
         } else if (edit_mode == EditMode::Channel) {
             channel = wrapped_step(channel, 1, 13, delta);
             application->setChannel(static_cast<uint16_t>(channel));
             prefs.putInt("channel", channel);
+            mode_selected_at_ms = millis();
             draw_channel();
         } else {
             tx_pitch_mode = static_cast<uint8_t>(
@@ -330,6 +350,7 @@ void loop()
                              delta));
             application->setTxPitchMode(tx_pitch_mode);
             prefs.putInt("txmode", tx_pitch_mode);
+            mode_selected_at_ms = millis();
             draw_channel();
         }
     }
