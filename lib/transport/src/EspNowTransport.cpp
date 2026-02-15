@@ -23,10 +23,30 @@ static void promiscuous_rx_cb(void *buf, wifi_promiscuous_pkt_type_t type)
 void receiveCallback(const uint8_t *macAddr, const uint8_t *data, int dataLen)
 {
     (void)macAddr;
+    if (!instance) {
+        return;
+    }
     int header_size = instance->m_header_size;
     // first m_header_size bytes of m_buffer are the expected header
     if ((dataLen > header_size) && (dataLen<=MAX_ESP_NOW_PACKET_SIZE) && (memcmp(data,instance->m_buffer,header_size) == 0)) {
+      uint32_t now_ms = millis();
+      if (instance->m_last_rx_ms != 0) {
+        uint32_t gap_ms = now_ms - instance->m_last_rx_ms;
+        if (gap_ms > 30) {
+          instance->m_rx_gap_events++;
+        }
+        if (gap_ms > instance->m_rx_max_gap_ms) {
+          instance->m_rx_max_gap_ms = gap_ms;
+        }
+      }
+      instance->m_last_rx_ms = now_ms;
       instance->m_output_buffer->add_samples(data + header_size, dataLen - header_size);
+      instance->m_rx_ok_packets++;
+      instance->m_rx_ok_bytes += static_cast<uint32_t>(dataLen - header_size);
+    } else if (dataLen <= header_size || dataLen > MAX_ESP_NOW_PACKET_SIZE) {
+      instance->m_rx_invalid_len_packets++;
+    } else {
+      instance->m_rx_bad_header_packets++;
     }
 }
 
@@ -81,11 +101,40 @@ int16_t EspNowTransport::getRSSI(void)
 
 void EspNowTransport::send()
 {
+  m_tx_packets++;
   esp_err_t result = esp_now_send(broadcastAddress, m_buffer, m_index + m_header_size);
 //  Serial.printf("m_index : %d\n", m_index);
 //  for (int i = 0; i < m_index; i++) 
 //    Serial.println(m_buffer[i]);
   if (result != ESP_OK) {
+    m_tx_failures++;
     Serial.printf("Failed to send: %s\n", esp_err_to_name(result));
   }
+}
+
+void EspNowTransport::snapshot_and_reset_stats(uint32_t &rx_ok,
+                                               uint32_t &rx_ok_bytes,
+                                               uint32_t &rx_bad_header,
+                                               uint32_t &rx_invalid_len,
+                                               uint32_t &rx_gap_events,
+                                               uint32_t &rx_max_gap_ms,
+                                               uint32_t &tx_packets,
+                                               uint32_t &tx_failures)
+{
+  rx_ok = m_rx_ok_packets;
+  rx_ok_bytes = m_rx_ok_bytes;
+  rx_bad_header = m_rx_bad_header_packets;
+  rx_invalid_len = m_rx_invalid_len_packets;
+  rx_gap_events = m_rx_gap_events;
+  rx_max_gap_ms = m_rx_max_gap_ms;
+  tx_packets = m_tx_packets;
+  tx_failures = m_tx_failures;
+  m_rx_ok_packets = 0;
+  m_rx_ok_bytes = 0;
+  m_rx_bad_header_packets = 0;
+  m_rx_invalid_len_packets = 0;
+  m_rx_gap_events = 0;
+  m_rx_max_gap_ms = 0;
+  m_tx_packets = 0;
+  m_tx_failures = 0;
 }

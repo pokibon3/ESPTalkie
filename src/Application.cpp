@@ -16,6 +16,9 @@
 namespace {
 
 static uint32_t s_tx_session_id = 1;
+static uint16_t s_tx_fade_samples_remaining = 0;
+constexpr size_t kMicWavWriteCacheSize = 8192;
+static uint8_t s_mic_wav_write_cache[kMicWavWriteCacheSize];
 
 static void begin_tx_session()
 {
@@ -23,6 +26,8 @@ static void begin_tx_session()
     if (s_tx_session_id == 0) {
         s_tx_session_id = 1;
     }
+    // Short fade-in to suppress click/pop at TX start.
+    s_tx_fade_samples_remaining = 320; // about 20ms @16kHz
 }
 
 static void application_task(void *param)
@@ -186,6 +191,97 @@ static void apply_quad_speed_simple_u8_block(uint8_t *buf, size_t n)
     memcpy(prev1, curr, n);
 }
 
+static void convert_i16_to_u8_tx_compatible(const int16_t* in, uint8_t* out, size_t n)
+{
+    if (!in || !out || n == 0) {
+        return;
+    }
+
+    // TX-side only refinement for 8-bit linear PCM:
+    // - gentle peak compression to use quantization range better
+    // - small TPDF-like dither before quantization to reduce "grainy" artifacts
+    static uint32_t lfsr = 0x12345678u;
+    constexpr int kDrivePct = 108;
+    constexpr int kKnee = 11000;
+    constexpr int kCeil = 22000;
+    constexpr int kDitherAmp = 96;  // about 0.75 LSB in 8-bit domain
+
+    auto next_rand = [&]() -> int {
+        lfsr ^= lfsr << 13;
+        lfsr ^= lfsr >> 17;
+        lfsr ^= lfsr << 5;
+        return static_cast<int>(lfsr & 0xFF);
+    };
+
+    for (size_t i = 0; i < n; ++i) {
+        int x = static_cast<int>(in[i]);
+        x = (x * kDrivePct) / 100;
+
+        int ax = abs(x);
+        if (ax > kKnee) {
+            const int sign = (x >= 0) ? 1 : -1;
+            const int over = ax - kKnee;
+            int y = kKnee + (over / 3);
+            if (y > kCeil) y = kCeil;
+            x = sign * y;
+        }
+
+        const int dither = (next_rand() - next_rand()) * kDitherAmp / 255;
+        x += dither;
+
+        int v = 128 + ((x + 128) >> 8);
+        if (v < 0) v = 0;
+        if (v > 255) v = 255;
+        out[i] = static_cast<uint8_t>(v);
+    }
+}
+
+static void apply_tx_frontend_i16_to_u8_block(const int16_t* in, uint8_t* out, size_t n)
+{
+    if (!in || !out || n == 0) {
+        return;
+    }
+
+    // Front-end processing before 8-bit transport:
+    // - short fade-in to suppress TX-start click
+    // - near-linear conversion (limiter effectively disabled)
+    constexpr int kCenter = 128;
+    constexpr int kFadeTotalSamples = 320;  // about 20ms @16kHz
+    constexpr int kNoiseGate = 0;           // disabled (caused choppy voice)
+    constexpr int kKnee = 32000;   // practically disables compression
+    constexpr int kCeil = 32000;
+    constexpr int kGainPct = 96;   // slight trim for headroom
+
+    for (size_t i = 0; i < n; ++i) {
+        int x = static_cast<int>(in[i]);
+        x = (x * kGainPct) / 100;
+
+        if (s_tx_fade_samples_remaining > 0) {
+            const int done = kFadeTotalSamples - static_cast<int>(s_tx_fade_samples_remaining);
+            x = (x * done) / kFadeTotalSamples;
+            --s_tx_fade_samples_remaining;
+        }
+
+        int ax = abs(x);
+        if (kNoiseGate > 0 && ax < kNoiseGate) {
+            x = 0;
+            ax = 0;
+        }
+        if (ax > kKnee) {
+            const int sign = (x >= 0) ? 1 : -1;
+            const int over = ax - kKnee;
+            int y = kKnee + (over / 4);
+            if (y > kCeil) y = kCeil;
+            x = sign * y;
+        }
+
+        int v = kCenter + ((x + 128) >> 8);
+        if (v < 0) v = 0;
+        if (v > 255) v = 255;
+        out[i] = static_cast<uint8_t>(v);
+    }
+}
+
 static uint8_t default_pitch_mode_from_config()
 {
 #if TX_PITCH_MODE == TX_PITCH_MODE_OCTAVE_UP_SIMPLE
@@ -271,6 +367,7 @@ static void dump_mic_wav_to_spiffs_10s()
         return;
     }
 
+    SPIFFS.remove("/mic_10s.wav");
     File f = SPIFFS.open("/mic_10s.wav", FILE_WRITE);
     if (!f) {
         return;
@@ -285,33 +382,103 @@ static void dump_mic_wav_to_spiffs_10s()
 
     constexpr size_t kChunkSamples = 256;
     int16_t buf[kChunkSamples];
-    int32_t hpf_prev_x = 0;
-    int32_t hpf_prev_y = 0;
     uint32_t data_bytes = 0;
-    const uint32_t start_ms = millis();
-    const uint32_t record_ms = static_cast<uint32_t>(MIC_WAV_DUMP_SECONDS) * 1000U;
+    size_t write_cache_used = 0;
+    constexpr uint16_t warmup_chunks = 8;   // about 128ms @ 256 samples/chunk, 16kHz
+    constexpr uint16_t record_fade_samples = 256;  // about 16ms @ 16kHz
+    const uint32_t target_samples = static_cast<uint32_t>(MIC_WAV_DUMP_SECONDS) * SAMPLE_RATE;
+    int last_remaining = -1;
+    const UBaseType_t old_prio = uxTaskPriorityGet(nullptr);
+    const UBaseType_t raised_prio = (configMAX_PRIORITIES > 2) ? (configMAX_PRIORITIES - 2) : old_prio;
 
-    M5.Mic.begin();
-    while (millis() - start_ms < record_ms) {
-        if (M5.Mic.record(buf, kChunkSamples, SAMPLE_RATE, false)) {
-            for (size_t i = 0; i < kChunkSamples; ++i) {
-                int32_t x = buf[i];
-                int32_t y = x - hpf_prev_x + ((hpf_prev_y * 31) >> 5);
-                hpf_prev_x = x;
-                hpf_prev_y = y;
-                if (y > 32767) y = 32767;
-                if (y < -32768) y = -32768;
-                buf[i] = static_cast<int16_t>(y);
+    auto flush_cache = [&]() {
+        if (write_cache_used == 0) {
+            return;
+        }
+        size_t written = 0;
+        while (written < write_cache_used) {
+            size_t n = f.write(s_mic_wav_write_cache + written, write_cache_used - written);
+            if (n == 0) {
+                break;
             }
-            size_t n = f.write(reinterpret_cast<const uint8_t *>(buf), sizeof(buf));
-            data_bytes += static_cast<uint32_t>(n);
+            written += n;
+        }
+        data_bytes += static_cast<uint32_t>(written);
+        write_cache_used = 0;
+    };
+
+    auto draw_countdown = [&](int remaining_sec) {
+        const uint16_t bg = M5.Display.color565(20, 20, 20);
+        const uint16_t fg = TFT_WHITE;
+        M5.Display.fillRect(0, 0, M5.Display.width(), kUiLayout.status_h, bg);
+        M5.Display.setFont(&fonts::Font0);
+        M5.Display.setTextDatum(middle_center);
+        M5.Display.setTextSize(2);
+        M5.Display.setTextColor(fg, bg);
+        char msg[24];
+        snprintf(msg, sizeof(msg), "REC %2ds", remaining_sec);
+        M5.Display.drawString(msg, M5.Display.width() / 2, kUiLayout.status_h / 2);
+        M5.Display.setTextDatum(top_left);
+    };
+
+    vTaskPrioritySet(nullptr, raised_prio);
+    M5.Mic.begin();
+
+    // Discard initial DMA/mic startup chunks to avoid startup click/pop.
+    uint16_t discarded_chunks = 0;
+    while (discarded_chunks < warmup_chunks) {
+        if (M5.Mic.record(buf, kChunkSamples, SAMPLE_RATE, true)) {
+            ++discarded_chunks;
         }
         vTaskDelay(pdMS_TO_TICKS(1));
     }
+
+    uint32_t collected_samples = 0;
+    uint16_t fade_samples_remaining = record_fade_samples;
+    while (collected_samples < target_samples) {
+        int remaining = static_cast<int>((target_samples - collected_samples + SAMPLE_RATE - 1) / SAMPLE_RATE);
+        if (remaining < 0) remaining = 0;
+        if (remaining != last_remaining) {
+            draw_countdown(remaining);
+            last_remaining = remaining;
+        }
+        bool recorded = M5.Mic.record(buf, kChunkSamples, SAMPLE_RATE, true);
+        if (!recorded) {
+            memset(buf, 0, sizeof(buf));
+        }
+        if (fade_samples_remaining > 0) {
+            for (size_t i = 0; i < kChunkSamples && fade_samples_remaining > 0; ++i) {
+                const int done = static_cast<int>(record_fade_samples - fade_samples_remaining);
+                int32_t x = buf[i];
+                x = (x * done) / static_cast<int>(record_fade_samples);
+                buf[i] = static_cast<int16_t>(x);
+                --fade_samples_remaining;
+            }
+        }
+        // Save raw mic samples for diagnosis (no filter/effect).
+        const uint8_t* src = reinterpret_cast<const uint8_t*>(buf);
+        size_t bytes_remaining = sizeof(buf);
+        while (bytes_remaining > 0) {
+            size_t room = kMicWavWriteCacheSize - write_cache_used;
+            size_t to_copy = (bytes_remaining < room) ? bytes_remaining : room;
+            memcpy(s_mic_wav_write_cache + write_cache_used, src, to_copy);
+            write_cache_used += to_copy;
+            src += to_copy;
+            bytes_remaining -= to_copy;
+            if (write_cache_used == kMicWavWriteCacheSize) {
+                flush_cache();
+            }
+        }
+        collected_samples += static_cast<uint32_t>(kChunkSamples);
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+    flush_cache();
     M5.Mic.end();
+    vTaskPrioritySet(nullptr, old_prio);
 
     write_wav_header(f, SAMPLE_RATE, 16, 1, data_bytes);
     f.close();
+    Serial.printf("WAV dump completed: /mic_10s.wav (%lu bytes)\n", static_cast<unsigned long>(data_bytes));
 }
 
 }  // namespace
@@ -332,15 +499,6 @@ void Application::begin()
     Serial.print("My IDF Version is: ");
     Serial.println(esp_get_idf_version());
 
-    WiFi.mode(WIFI_STA);
-    WiFi.disconnect();
-    WiFi.setSleep(true);
-
-    Serial.print("My MAC Address is: ");
-    Serial.println(WiFi.macAddress());
-
-    m_transport->begin();
-
 #if AUDIO_DIAG_SOURCE == AUDIO_DIAG_SRC_MIC
     auto mic_cfg = M5.Mic.config();
     mic_cfg.magnification = MIC_MAGNIFICATION;
@@ -349,8 +507,18 @@ void Application::begin()
 #endif
 
 #if MIC_WAV_DUMP_TO_SPIFFS
+    // Capture diagnostic WAV before enabling radio/transport.
     dump_mic_wav_to_spiffs_10s();
 #endif
+
+    WiFi.mode(WIFI_STA);
+    WiFi.disconnect();
+    WiFi.setSleep(true);
+
+    Serial.print("My MAC Address is: ");
+    Serial.println(WiFi.macAddress());
+
+    m_transport->begin();
 
     M5.Speaker.begin();
     M5.Speaker.setVolume(m_speaker_volume);
@@ -553,6 +721,8 @@ void Application::loop()
     bool mic_active = false;
     bool spk_active = true;
     uint32_t last_rssi_draw_ms = 0;
+    uint32_t last_diag_ms = 0;
+    uint32_t mic_record_fail_count = 0;
     const uint32_t ptt_enable_after_ms = millis() + 1000;
     float tone_phase = 0.0f;
     constexpr float tone_freq_hz = 1000.0f;
@@ -564,6 +734,46 @@ void Application::loop()
         Serial.println("Failed to allocate audio buffers");
         vTaskDelete(nullptr);
     }
+
+    auto emit_diag = [&](const char* phase) {
+        uint32_t now = millis();
+        if (now - last_diag_ms < 1000) {
+            return;
+        }
+        last_diag_ms = now;
+
+        uint32_t rx_ok = 0;
+        uint32_t rx_ok_bytes = 0;
+        uint32_t rx_bad_header = 0;
+        uint32_t rx_invalid_len = 0;
+        uint32_t rx_gap_events = 0;
+        uint32_t rx_max_gap_ms = 0;
+        uint32_t tx_packets = 0;
+        uint32_t tx_failures = 0;
+        auto *espnow = static_cast<EspNowTransport*>(m_transport);
+        espnow->snapshot_and_reset_stats(rx_ok, rx_ok_bytes, rx_bad_header, rx_invalid_len, rx_gap_events, rx_max_gap_ms, tx_packets, tx_failures);
+
+        uint32_t underruns = 0;
+        uint32_t overflows = 0;
+        m_output_buffer->snapshot_and_reset_stats(underruns, overflows);
+        int avail = m_output_buffer->get_available_samples();
+        int cap = m_output_buffer->get_buffer_size();
+
+        (void)phase;
+        (void)rx_ok;
+        (void)rx_ok_bytes;
+        (void)rx_bad_header;
+        (void)rx_invalid_len;
+        (void)rx_gap_events;
+        (void)rx_max_gap_ms;
+        (void)tx_packets;
+        (void)tx_failures;
+        (void)avail;
+        (void)cap;
+        (void)underruns;
+        (void)overflows;
+        mic_record_fail_count = 0;
+    };
 
     while (true) {
         bool ptt = (millis() > ptt_enable_after_ms) && M5.BtnA.isPressed();
@@ -604,7 +814,10 @@ void Application::loop()
                 bool ready = false;
                 size_t send_samples = mic_chunk_samples;
 #if AUDIO_DIAG_SOURCE == AUDIO_DIAG_SRC_MIC
-                ready = M5.Mic.record(mic_samples_u8, mic_chunk_samples, SAMPLE_RATE, false);
+                ready = M5.Mic.record(mic_samples, mic_chunk_samples, SAMPLE_RATE, false);
+                if (!ready) {
+                    ++mic_record_fail_count;
+                }
 #elif AUDIO_DIAG_SOURCE == AUDIO_DIAG_SRC_SILENCE
                 memset(mic_samples, 0, sizeof(int16_t) * mic_chunk_samples);
                 ready = true;
@@ -621,6 +834,7 @@ void Application::loop()
 
                 if (ready) {
 #if AUDIO_DIAG_SOURCE == AUDIO_DIAG_SRC_MIC
+                    convert_i16_to_u8_tx_compatible(mic_samples, mic_samples_u8, send_samples);
                     switch (m_tx_pitch_mode) {
                         case kTxPitchModeM2:
                             apply_octave_up_simple_u8_block(mic_samples_u8, send_samples);
@@ -645,6 +859,7 @@ void Application::loop()
 #else
                 vTaskDelay(synth_chunk_delay_ticks);
 #endif
+                emit_diag("TX");
             }
             m_transport->flush();
 #if AUDIO_DIAG_SOURCE == AUDIO_DIAG_SRC_MIC
@@ -691,6 +906,7 @@ void Application::loop()
             }
             M5.Speaker.playRaw(play_samples_stereo, play_chunk_bytes * 2, SAMPLE_RATE, true, 1, -1, true);
             vTaskDelay(pdMS_TO_TICKS(1));
+            emit_diag("RX");
         }
     }
 }

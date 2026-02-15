@@ -22,6 +22,9 @@ private:
   int m_buffer_size;
   // are we currently buffering samples?
   bool m_buffering;
+  // diagnostics
+  uint32_t m_underrun_events;
+  uint32_t m_overflow_events;
   // the sample buffer
   uint8_t *m_buffer;
   // thread safety
@@ -39,6 +42,8 @@ public:
     m_available_samples = 0;
     // we'll start off buffering data as we have no samples yet
     m_buffering = true;
+    m_underrun_events = 0;
+    m_overflow_events = 0;
     // make sufficient space for the bufferring and incoming data
     m_buffer_size = 3 * number_samples_to_buffer;
     m_buffer = (uint8_t *)malloc(m_buffer_size);
@@ -63,6 +68,7 @@ public:
       } else {
         // drop the oldest sample on overflow to keep buffer state consistent
         m_read_head = (m_read_head + 1) % m_buffer_size;
+        ++m_overflow_events;
       }
     }
     xSemaphoreGive(m_semaphore);
@@ -81,6 +87,7 @@ public:
       if (m_available_samples == 0 && !m_buffering)
       {
         m_buffering = true;
+        ++m_underrun_events;
         samples[i] = 128;
       }
       // are we buffering?
@@ -105,6 +112,29 @@ public:
         m_available_samples--;
       }
     }
+    xSemaphoreGive(m_semaphore);
+  }
+
+  int get_available_samples()
+  {
+    xSemaphoreTake(m_semaphore, portMAX_DELAY);
+    int v = m_available_samples;
+    xSemaphoreGive(m_semaphore);
+    return v;
+  }
+
+  int get_buffer_size()
+  {
+    return m_buffer_size;
+  }
+
+  void snapshot_and_reset_stats(uint32_t &underruns, uint32_t &overflows)
+  {
+    xSemaphoreTake(m_semaphore, portMAX_DELAY);
+    underruns = m_underrun_events;
+    overflows = m_overflow_events;
+    m_underrun_events = 0;
+    m_overflow_events = 0;
     xSemaphoreGive(m_semaphore);
   }
 };
