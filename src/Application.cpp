@@ -15,6 +15,16 @@
 
 namespace {
 
+static uint32_t s_tx_session_id = 1;
+
+static void begin_tx_session()
+{
+    ++s_tx_session_id;
+    if (s_tx_session_id == 0) {
+        s_tx_session_id = 1;
+    }
+}
+
 static void application_task(void *param)
 {
     auto *application = reinterpret_cast<Application *>(param);
@@ -53,9 +63,14 @@ static void apply_octave_up_simple_u8_block(uint8_t *buf, size_t n)
     static bool has_prev = false;
     static uint8_t prev[256];
     static uint8_t curr[256];
+    static uint32_t last_session_id = 0;
 
     if (!buf || n == 0 || n > sizeof(prev)) {
         return;
+    }
+    if (last_session_id != s_tx_session_id) {
+        has_prev = false;
+        last_session_id = s_tx_session_id;
     }
 
     memcpy(curr, buf, n);
@@ -81,9 +96,14 @@ static void apply_triple_speed_simple_u8_block(uint8_t *buf, size_t n)
     static uint8_t prev1[256];
     static uint8_t curr[256];
     static uint8_t history_count = 0;
+    static uint32_t last_session_id = 0;
 
     if (!buf || n == 0 || n > sizeof(prev1)) {
         return;
+    }
+    if (last_session_id != s_tx_session_id) {
+        history_count = 0;
+        last_session_id = s_tx_session_id;
     }
 
     memcpy(curr, buf, n);
@@ -122,9 +142,14 @@ static void apply_quad_speed_simple_u8_block(uint8_t *buf, size_t n)
     static uint8_t prev1[256];
     static uint8_t curr[256];
     static uint8_t history_count = 0;
+    static uint32_t last_session_id = 0;
 
     if (!buf || n == 0 || n > sizeof(prev1)) {
         return;
+    }
+    if (last_session_id != s_tx_session_id) {
+        history_count = 0;
+        last_session_id = s_tx_session_id;
     }
 
     memcpy(curr, buf, n);
@@ -309,7 +334,7 @@ void Application::begin()
 
     WiFi.mode(WIFI_STA);
     WiFi.disconnect();
-    WiFi.setSleep(false);
+    WiFi.setSleep(true);
 
     Serial.print("My MAC Address is: ");
     Serial.println(WiFi.macAddress());
@@ -543,6 +568,7 @@ void Application::loop()
     while (true) {
         bool ptt = (millis() > ptt_enable_after_ms) && M5.BtnA.isPressed();
         if (ptt) {
+            begin_tx_session();
             if (enable_rssi_overlay) {
                 dispStatus(true);
                 int8_t tx_qdbm = 0;

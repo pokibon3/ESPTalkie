@@ -257,6 +257,11 @@ void setup()
 {
     Serial.begin(115200);
     auto cfg = M5.config();
+#if TALKIE_TARGET_M5STICKS3
+    cfg.output_power = false;
+#else
+    cfg.output_power = true;
+#endif
 #if M5UNIFIED_USE_ATOMIC_ECHO_BASE
     cfg.external_speaker.atomic_echo = true;
 #endif
