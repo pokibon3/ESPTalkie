@@ -26,7 +26,9 @@ enum class EditMode : uint8_t {
 };
 EditMode edit_mode = EditMode::None;
 uint32_t mode_selected_at_ms = 0;
-constexpr uint8_t kVolumeTable[5] = { 44, 66, 88, 110, 132 };
+constexpr uint8_t kVolumeTable[5] = { 80, 120, 160, 208, 255 };
+constexpr bool kMatchTestModeSpeakerGain = false;
+constexpr uint8_t kTestLikeSpeakerGain = 255;
 Preferences prefs;
 #if TALKIE_TARGET_M5ATOMS3_ECHO_BASE
 constexpr int kDefaultVolumeLevel = 1;
@@ -251,6 +253,14 @@ void draw_layout()
     display_unlock();
 }
 
+uint8_t current_speaker_gain()
+{
+    if (kMatchTestModeSpeakerGain) {
+        return kTestLikeSpeakerGain;
+    }
+    return kVolumeTable[volume_level - 1];
+}
+
 }  // namespace
 
 void setup()
@@ -272,23 +282,39 @@ void setup()
     if (channel < 1 || channel > 13) channel = 1;
     volume_level = prefs.getInt("volume", kDefaultVolumeLevel);
     if (volume_level < 1 || volume_level > 5) volume_level = 3;
+#if PTT_LOCAL_PLAYBACK_TEST_MODE
+    volume_level = 5;
+#endif
     tx_pitch_mode = prefs.getInt("txmode", Application::kTxPitchModeM1);
     if (tx_pitch_mode < Application::kTxPitchModeM1 || tx_pitch_mode > Application::kTxPitchModeM3) {
         tx_pitch_mode = Application::kTxPitchModeM1;
     }
 
+#if !PTT_LOCAL_PLAYBACK_TEST_MODE
     draw_layout();
+#else
+    display_lock();
+    M5.Display.setRotation(1);
+    M5.Display.fillScreen(TFT_BLACK);
+    display_unlock();
+#endif
     Serial.printf("Detected board=%d, display=%dx%d\n",
                   static_cast<int>(M5.getBoard()),
                   M5.Display.width(), M5.Display.height());
 
     application = new Application();
     application->setChannel(static_cast<uint16_t>(channel));
-    application->setSpeakerVolume(kVolumeTable[volume_level - 1]);
+    application->setSpeakerVolume(current_speaker_gain());
     application->setTxPitchMode(tx_pitch_mode);
+    Serial.printf("VOL level=%d mapped=%u applied=%u\n",
+                  volume_level,
+                  static_cast<unsigned>(current_speaker_gain()),
+                  static_cast<unsigned>(application->getSpeakerVolume()));
     mode_selected_at_ms = millis();
     application->begin();
+#if !PTT_LOCAL_PLAYBACK_TEST_MODE
     application->dispStatus(false);
+#endif
 
     Serial.println("M5StickS3 Walkie Talkie Application started");
 }
@@ -296,6 +322,10 @@ void setup()
 void loop()
 {
     M5.update();
+#if PTT_LOCAL_PLAYBACK_TEST_MODE
+    vTaskDelay(pdMS_TO_TICKS(5));
+    return;
+#endif
     const ShakeAction shake_action = detect_shake_action();
     if (edit_mode != EditMode::None &&
         (millis() - mode_selected_at_ms >= kModeAutoClearMs)) {
@@ -337,7 +367,7 @@ void loop()
 
         if (edit_mode == EditMode::Volume) {
             volume_level = wrapped_step(volume_level, 1, 5, delta);
-            application->setSpeakerVolume(kVolumeTable[volume_level - 1]);
+            application->setSpeakerVolume(current_speaker_gain());
             prefs.putInt("volume", volume_level);
             mode_selected_at_ms = millis();
             draw_volume();
