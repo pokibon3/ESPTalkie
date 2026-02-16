@@ -769,6 +769,12 @@ void Application::begin()
     Serial.print("My MAC Address is: ");
     Serial.println(WiFi.macAddress());
 
+    const char *packet_magic = ESPNOW_PACKET_MAGIC_TEXT;
+    if (m_transport->set_header(static_cast<int>(strlen(packet_magic)),
+                                reinterpret_cast<const uint8_t *>(packet_magic)) != 0) {
+        Serial.println("Failed to set ESP-NOW packet header filter");
+    }
+
     m_transport->begin();
 #endif
 
