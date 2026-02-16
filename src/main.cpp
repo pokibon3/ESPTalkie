@@ -26,7 +26,11 @@ enum class EditMode : uint8_t {
 };
 EditMode edit_mode = EditMode::None;
 uint32_t mode_selected_at_ms = 0;
+#if TALKIE_TARGET_M5ATOMS3_ECHO_BASE
+constexpr uint8_t kVolumeTable[5] = { 20, 30, 45, 60, 80 };
+#else
 constexpr uint8_t kVolumeTable[5] = { 80, 120, 160, 208, 255 };
+#endif
 constexpr bool kMatchTestModeSpeakerGain = false;
 constexpr uint8_t kTestLikeSpeakerGain = 255;
 Preferences prefs;
