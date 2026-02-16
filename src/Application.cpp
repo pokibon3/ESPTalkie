@@ -29,7 +29,7 @@ static void begin_tx_session()
         s_tx_session_id = 1;
     }
     // Short fade-in to suppress click/pop at TX start.
-    s_tx_fade_samples_remaining = 320; // about 20ms @16kHz
+    s_tx_fade_samples_remaining = 128; // about 8ms @16kHz
 }
 
 static void application_task(void *param)
@@ -196,11 +196,66 @@ static void apply_quad_speed_simple_u8_block(uint8_t *buf, size_t n)
     memcpy(prev1, curr, n);
 }
 
+static void apply_tx_pitch_mode_u8_block(uint8_t mode, uint8_t *buf, size_t n)
+{
+    switch (mode) {
+        case Application::kTxPitchModeM2:
+            apply_octave_up_simple_u8_block(buf, n);
+            break;
+        case Application::kTxPitchModeM3:
+            apply_triple_speed_simple_u8_block(buf, n);
+            break;
+        case Application::kTxPitchModeM1:
+        default:
+            break;
+    }
+}
+
 static void convert_i16_to_u8_tx_compatible(const int16_t* in, uint8_t* out, size_t n)
 {
     if (!in || !out || n == 0) {
         return;
     }
+
+#if TX_8BIT_COMPRESSOR_ENABLE
+    // TX-side refinement for 8-bit linear PCM:
+    // - gentle peak compression to use quantization range better
+    // - small TPDF-like dither before quantization to reduce "grainy" artifacts
+    static uint32_t lfsr = 0x12345678u;
+    constexpr int kDrivePct = 108;
+    constexpr int kKnee = 11000;
+    constexpr int kCeil = 22000;
+    constexpr int kDitherAmp = 96;  // about 0.75 LSB in 8-bit domain
+
+    auto next_rand = [&]() -> int {
+        lfsr ^= lfsr << 13;
+        lfsr ^= lfsr >> 17;
+        lfsr ^= lfsr << 5;
+        return static_cast<int>(lfsr & 0xFF);
+    };
+
+    for (size_t i = 0; i < n; ++i) {
+        int x = static_cast<int>(in[i]);
+        x = (x * kDrivePct) / 100;
+
+        int ax = abs(x);
+        if (ax > kKnee) {
+            const int sign = (x >= 0) ? 1 : -1;
+            const int over = ax - kKnee;
+            int y = kKnee + (over / 3);
+            if (y > kCeil) y = kCeil;
+            x = sign * y;
+        }
+
+        const int dither = (next_rand() - next_rand()) * kDitherAmp / 255;
+        x += dither;
+
+        int v = 128 + ((x + 128) >> 8);
+        if (v < 0) v = 0;
+        if (v > 255) v = 255;
+        out[i] = static_cast<uint8_t>(v);
+    }
+#else
     // Minimal conversion only: signed 16-bit PCM -> unsigned 8-bit PCM.
     for (size_t i = 0; i < n; ++i) {
         int v = 128 + (static_cast<int>(in[i]) >> 8);
@@ -208,6 +263,7 @@ static void convert_i16_to_u8_tx_compatible(const int16_t* in, uint8_t* out, siz
         if (v > 255) v = 255;
         out[i] = static_cast<uint8_t>(v);
     }
+#endif
 }
 
 static void apply_tx_frontend_i16_to_u8_block(const int16_t* in, uint8_t* out, size_t n)
@@ -220,7 +276,7 @@ static void apply_tx_frontend_i16_to_u8_block(const int16_t* in, uint8_t* out, s
     // - short fade-in to suppress TX-start click
     // - near-linear conversion (limiter effectively disabled)
     constexpr int kCenter = 128;
-    constexpr int kFadeTotalSamples = 320;  // about 20ms @16kHz
+    constexpr int kFadeTotalSamples = 128;  // about 8ms @16kHz
     constexpr int kNoiseGate = 0;           // disabled (caused choppy voice)
     constexpr int kKnee = 32000;   // practically disables compression
     constexpr int kCeil = 32000;
@@ -684,7 +740,7 @@ Application::Application() :
     m_speaker_volume(132),
     m_tx_pitch_mode(default_pitch_mode_from_config())
 {
-    m_output_buffer = new OutputBuffer(300 * 16);
+    m_output_buffer = new OutputBuffer(120 * 16);
     m_transport = new EspNowTransport(m_output_buffer, static_cast<uint8_t>(m_channel));
 }
 
@@ -920,6 +976,7 @@ void Application::loop()
     int16_t *record_samples_i16 = reinterpret_cast<int16_t *>(malloc(sizeof(int16_t) * kMaxRecordSamples));
     uint8_t *record_samples_u8 = reinterpret_cast<uint8_t *>(malloc(kMaxRecordSamples));
     bool mic_active = false;
+    bool mic_primed = false;
     bool spk_active = true;
     bool idle_status_drawn = false;
     int16_t play_samples_mono[kRecordChunkSamples];
@@ -1069,6 +1126,7 @@ void Application::loop()
 #else
     constexpr size_t mic_chunk_samples = 128;
     constexpr size_t play_chunk_bytes = kRxPlayChunkBytes;
+    constexpr size_t kRxPrefillChunks = 3;
     constexpr bool enable_tx_overlay = true;
     constexpr bool enable_rx_overlay = true;
     constexpr size_t rx_buffered_samples = SAMPLE_RATE * RX_RAM_BUFFERED_SECONDS;
@@ -1077,7 +1135,9 @@ void Application::loop()
     int16_t *mic_samples = reinterpret_cast<int16_t *>(malloc(sizeof(int16_t) * mic_chunk_samples));
     uint8_t *mic_samples_u8 = reinterpret_cast<uint8_t *>(malloc(mic_chunk_samples));
     uint8_t *rx_buffered_samples_u8 = reinterpret_cast<uint8_t *>(malloc(rx_buffered_samples));
+    uint8_t *rx_play_buffers[3] = { nullptr, nullptr, nullptr };
     bool mic_active = false;
+    bool mic_primed = false;
     bool spk_active = true;
     uint32_t last_rssi_draw_ms = 0;
     uint32_t last_rx_level_log_ms = millis();
@@ -1090,32 +1150,22 @@ void Application::loop()
     const float tone_phase_step = two_pi * tone_freq_hz / static_cast<float>(SAMPLE_RATE);
     constexpr int16_t tone_amplitude = 12000;
 
-    uint8_t *rx_play_buffers[3] = { nullptr, nullptr, nullptr };
+    rx_play_buffers[0] = reinterpret_cast<uint8_t *>(malloc(kRxPlayChunkBytes));
+    rx_play_buffers[1] = reinterpret_cast<uint8_t *>(malloc(kRxPlayChunkBytes));
+    rx_play_buffers[2] = reinterpret_cast<uint8_t *>(malloc(kRxPlayChunkBytes));
     size_t rx_play_buf_index = 0;
     bool rx_play_pending = false;
     uint8_t *rx_play_pending_ptr = nullptr;
 
-#if !RX_RAM_BUFFERED_PLAYBACK_MODE
-    rx_play_buffers[0] = reinterpret_cast<uint8_t *>(malloc(kRxPlayChunkBytes));
-    rx_play_buffers[1] = reinterpret_cast<uint8_t *>(malloc(kRxPlayChunkBytes));
-    rx_play_buffers[2] = reinterpret_cast<uint8_t *>(malloc(kRxPlayChunkBytes));
-#endif
-
-    if (!mic_samples || !mic_samples_u8 || !rx_buffered_samples_u8
-#if !RX_RAM_BUFFERED_PLAYBACK_MODE
-        || !rx_play_buffers[0] || !rx_play_buffers[1] || !rx_play_buffers[2]
-#endif
-    ) {
+    if (!mic_samples || !mic_samples_u8 || !rx_buffered_samples_u8 ||
+        !rx_play_buffers[0] || !rx_play_buffers[1] || !rx_play_buffers[2]) {
         Serial.println("Failed to allocate audio buffers");
         vTaskDelete(nullptr);
     }
-
     while (true) {
         bool ptt = (millis() > ptt_enable_after_ms) && M5.BtnA.isPressed();
         if (ptt) {
             begin_tx_session();
-            rx_play_pending = false;
-            rx_play_pending_ptr = nullptr;
             if (enable_tx_overlay) {
                 dispStatus(true);
                 int8_t tx_qdbm = 0;
@@ -1132,6 +1182,16 @@ void Application::loop()
             if (!mic_active) {
                 M5.Mic.begin();
                 mic_active = true;
+                if (!mic_primed) {
+                    // First mic start after boot can include transient noise.
+                    // Prime input by discarding a couple of chunks once.
+                    for (int i = 0; i < 2; ++i) {
+                        if (!M5.Mic.record(mic_samples, mic_chunk_samples, SAMPLE_RATE, true)) {
+                            break;
+                        }
+                    }
+                    mic_primed = true;
+                }
             }
 #endif
 
@@ -1169,6 +1229,8 @@ void Application::loop()
                 if (ready) {
 #if AUDIO_DIAG_SOURCE == AUDIO_DIAG_SRC_MIC
                     convert_i16_to_u8_tx_compatible(mic_samples, mic_samples_u8, send_samples);
+                    const uint8_t tx_pitch_mode = m_tx_pitch_mode;
+                    apply_tx_pitch_mode_u8_block(tx_pitch_mode, mic_samples_u8, send_samples);
                     for (size_t i = 0; i < send_samples; ++i) {
                         m_transport->add_sample_u8(mic_samples_u8[i]);
                     }
@@ -1250,8 +1312,7 @@ void Application::loop()
             }
         }
 #else
-        unsigned long start_time = millis();
-        while (millis() - start_time < 1000 || !M5.BtnA.isPressed()) {
+        while (!M5.BtnA.isPressed()) {
             if (enable_rx_overlay) {
                 uint32_t now = millis();
                 if (now - last_rssi_draw_ms >= 500) {  // lower UI refresh load
@@ -1268,40 +1329,43 @@ void Application::loop()
                 rx_play_pending = false;
                 rx_play_pending_ptr = nullptr;
             }
-
-            if (!rx_play_pending) {
-                uint8_t *play_samples = rx_play_buffers[rx_play_buf_index];
-                m_output_buffer->remove_samples(play_samples, static_cast<int>(kRxPlayChunkBytes));
-                for (size_t i = 0; i < kRxPlayChunkBytes; ++i) {
-                    const uint8_t v = play_samples[i];
-                    if (v < rx_level_min) rx_level_min = v;
-                    if (v > rx_level_max) rx_level_max = v;
+            size_t queued_now = 0;
+            while (queued_now < kRxPrefillChunks) {
+                if (!rx_play_pending) {
+                    uint8_t *chunk_ptr = rx_play_buffers[rx_play_buf_index];
+                    m_output_buffer->remove_samples(chunk_ptr, static_cast<int>(kRxPlayChunkBytes));
+                    for (size_t i = 0; i < kRxPlayChunkBytes; ++i) {
+                        const uint8_t v = chunk_ptr[i];
+                        if (v < rx_level_min) rx_level_min = v;
+                        if (v > rx_level_max) rx_level_max = v;
+                    }
+                    uint32_t now_ms = millis();
+                    if (now_ms - last_rx_level_log_ms >= 1000) {
+                        Serial.printf("RX u8 range: min=%u max=%u\n",
+                                      static_cast<unsigned>(rx_level_min),
+                                      static_cast<unsigned>(rx_level_max));
+                        rx_level_min = 255;
+                        rx_level_max = 0;
+                        last_rx_level_log_ms = now_ms;
+                    }
+                    rx_play_pending_ptr = chunk_ptr;
+                    rx_play_pending = true;
                 }
-                uint32_t now_ms = millis();
-                if (now_ms - last_rx_level_log_ms >= 1000) {
-                    Serial.printf("RX u8 range: min=%u max=%u\n",
-                                  static_cast<unsigned>(rx_level_min),
-                                  static_cast<unsigned>(rx_level_max));
-                    rx_level_min = 255;
-                    rx_level_max = 0;
-                    last_rx_level_log_ms = now_ms;
-                }
-                rx_play_pending_ptr = play_samples;
-                rx_play_pending = true;
-            }
 
-            // Runtime-generated audio should use rotating buffers and queued playback.
-            // Keep one fixed virtual channel to avoid restarting the stream each chunk.
-            const bool queued = M5.Speaker.playRaw(rx_play_pending_ptr, kRxPlayChunkBytes, SAMPLE_RATE, false, 1, 0, false);
-            if (queued) {
+                const bool queued = M5.Speaker.playRaw(
+                    rx_play_pending_ptr, kRxPlayChunkBytes, SAMPLE_RATE, false, 1, 0, false);
+                if (!queued) {
+                    break;
+                }
                 rx_play_pending = false;
                 rx_play_pending_ptr = nullptr;
                 rx_play_buf_index = (rx_play_buf_index + 1) % 3;
-            } else {
-                vTaskDelay(pdMS_TO_TICKS(1));
+                ++queued_now;
             }
 
-            vTaskDelay(pdMS_TO_TICKS(1));
+            if (queued_now == 0) {
+                vTaskDelay(pdMS_TO_TICKS(1));
+            }
         }
 #endif
     }
