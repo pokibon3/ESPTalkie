@@ -25,6 +25,9 @@ private:
   // diagnostics
   uint32_t m_underrun_events;
   uint32_t m_overflow_events;
+  // last emitted sample for smooth concealment / recovery
+  uint8_t m_last_output_sample;
+  int m_recover_samples;
   // the sample buffer
   uint8_t *m_buffer;
   // thread safety
@@ -44,6 +47,8 @@ public:
     m_buffering = true;
     m_underrun_events = 0;
     m_overflow_events = 0;
+    m_last_output_sample = 128;
+    m_recover_samples = 0;
     // make sufficient space for the bufferring and incoming data
     m_buffer_size = 3 * number_samples_to_buffer;
     m_buffer = (uint8_t *)malloc(m_buffer_size);
@@ -82,34 +87,54 @@ public:
     xSemaphoreTake(m_semaphore, portMAX_DELAY);
     for (int i = 0; i < count; i++)
     {
-      samples[i] = 128;
+      samples[i] = m_last_output_sample;
       // if we have no samples and we aren't already buffering then we need to start buffering
       if (m_available_samples == 0 && !m_buffering)
       {
         m_buffering = true;
         ++m_underrun_events;
-        samples[i] = 128;
+        m_recover_samples = 32;
       }
       // are we buffering?
       if (m_buffering && m_available_samples < m_number_samples_to_buffer)
       {
-        // just return 0 as we don't have enough samples yet
-        samples[i] = 128;
+        // conceal gap smoothly by easing toward center instead of hard 128.
+        int s = static_cast<int>(m_last_output_sample);
+        int d = 128 - s;
+        if (d > 4) d = 4;
+        if (d < -4) d = -4;
+        s += d;
+        if (s < 0) s = 0;
+        if (s > 255) s = 255;
+        samples[i] = static_cast<uint8_t>(s);
+        m_last_output_sample = samples[i];
       }
       else
       {
         // we've buffered enough samples so no need to buffer anymore
-        m_buffering = false;
-        // just send back the samples we've got and move the read head forward
-//        uint8_t sample = m_buffer[m_read_head];
-        samples[i] = m_buffer[m_read_head];
-//        samples[i] = ((int16_t)sample - 128) << 2;
-//        samples[i] = sample << 2;
-//        Serial.println(samples[i]);
-//        samples[i] = sample;
-//        Serial.println(sample);
+        if (m_buffering) {
+          m_buffering = false;
+          m_recover_samples = 32;
+        }
+        // send buffered sample and move the read head forward
+        uint8_t raw = m_buffer[m_read_head];
         m_read_head = (m_read_head + 1) % m_buffer_size;
         m_available_samples--;
+
+        int out = static_cast<int>(raw);
+        if (m_recover_samples > 0) {
+          // Slew-limit immediately after recovery to avoid sharp click.
+          const int prev = static_cast<int>(m_last_output_sample);
+          int diff = out - prev;
+          const int kMaxStep = 12;
+          if (diff > kMaxStep) out = prev + kMaxStep;
+          if (diff < -kMaxStep) out = prev - kMaxStep;
+          --m_recover_samples;
+        }
+        if (out < 0) out = 0;
+        if (out > 255) out = 255;
+        samples[i] = static_cast<uint8_t>(out);
+        m_last_output_sample = samples[i];
       }
     }
     xSemaphoreGive(m_semaphore);
@@ -126,6 +151,27 @@ public:
   int get_buffer_size()
   {
     return m_buffer_size;
+  }
+
+  int get_target_buffer_samples()
+  {
+    xSemaphoreTake(m_semaphore, portMAX_DELAY);
+    int v = m_number_samples_to_buffer;
+    xSemaphoreGive(m_semaphore);
+    return v;
+  }
+
+  void set_target_buffer_samples(int target_samples)
+  {
+    xSemaphoreTake(m_semaphore, portMAX_DELAY);
+    if (target_samples < 1) {
+      target_samples = 1;
+    }
+    if (target_samples >= m_buffer_size) {
+      target_samples = m_buffer_size - 1;
+    }
+    m_number_samples_to_buffer = target_samples;
+    xSemaphoreGive(m_semaphore);
   }
 
   void snapshot_and_reset_stats(uint32_t &underruns, uint32_t &overflows)

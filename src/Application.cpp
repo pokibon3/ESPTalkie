@@ -18,6 +18,8 @@ namespace {
 static uint32_t s_tx_session_id = 1;
 static uint16_t s_tx_fade_samples_remaining = 0;
 constexpr size_t kMicWavWriteCacheSize = 8192;
+constexpr size_t kRxPlayChunkSamples = RX_PLAY_CHUNK_SAMPLES;
+constexpr size_t kRxPlayChunkBytes = kRxPlayChunkSamples;
 static uint8_t s_mic_wav_write_cache[kMicWavWriteCacheSize];
 
 static void begin_tx_session()
@@ -34,6 +36,72 @@ static void application_task(void *param)
 {
     auto *application = reinterpret_cast<Application *>(param);
     application->loop();
+}
+
+static void scope_plot_chunk_i16(const int16_t *samples, size_t n);
+static void scope_plot_chunk_u8_linear(const uint8_t *samples, size_t n);
+
+struct RxPlaybackTaskState {
+    OutputBuffer *output_buffer = nullptr;
+    volatile bool enabled = false;
+    volatile bool terminate = false;
+    volatile uint32_t ready_after_ms = 0;
+    bool show_waveform = false;
+    uint32_t last_rx_level_log_ms = 0;
+    uint8_t rx_level_min = 255;
+    uint8_t rx_level_max = 0;
+};
+
+static RxPlaybackTaskState s_rx_playback_state;
+static TaskHandle_t s_rx_playback_task_handle = nullptr;
+
+static void rx_playback_task(void *param)
+{
+    auto *state = reinterpret_cast<RxPlaybackTaskState *>(param);
+    uint8_t *play_samples = reinterpret_cast<uint8_t *>(malloc(kRxPlayChunkBytes));
+    if (!state || !state->output_buffer || !play_samples) {
+        if (play_samples) free(play_samples);
+        vTaskDelete(nullptr);
+    }
+
+    while (!state->terminate) {
+        if (!state->enabled) {
+            vTaskDelay(pdMS_TO_TICKS(1));
+            continue;
+        }
+
+        uint32_t now = millis();
+        if (now < state->ready_after_ms) {
+            vTaskDelay(pdMS_TO_TICKS(1));
+            continue;
+        }
+
+        state->output_buffer->remove_samples(play_samples, static_cast<int>(kRxPlayChunkBytes));
+        for (size_t i = 0; i < kRxPlayChunkBytes; ++i) {
+            const uint8_t v = play_samples[i];
+            if (v < state->rx_level_min) state->rx_level_min = v;
+            if (v > state->rx_level_max) state->rx_level_max = v;
+        }
+        if (now - state->last_rx_level_log_ms >= 1000) {
+            Serial.printf("RX u8 range: min=%u max=%u\n",
+                          static_cast<unsigned>(state->rx_level_min),
+                          static_cast<unsigned>(state->rx_level_max));
+            state->rx_level_min = 255;
+            state->rx_level_max = 0;
+            state->last_rx_level_log_ms = now;
+        }
+        if (state->show_waveform) {
+            scope_plot_chunk_u8_linear(play_samples, kRxPlayChunkBytes);
+        }
+        while (M5.Speaker.isPlaying()) {
+            vTaskDelay(pdMS_TO_TICKS(1));
+        }
+        M5.Speaker.playRaw(play_samples, kRxPlayChunkBytes, SAMPLE_RATE, false, 1, -1, true);
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+
+    free(play_samples);
+    vTaskDelete(nullptr);
 }
 
 static void write_wav_header(File &f, uint32_t sample_rate, uint16_t bits_per_sample, uint16_t channels, uint32_t data_bytes)
@@ -196,40 +264,9 @@ static void convert_i16_to_u8_tx_compatible(const int16_t* in, uint8_t* out, siz
     if (!in || !out || n == 0) {
         return;
     }
-
-    // TX-side only refinement for 8-bit linear PCM:
-    // - gentle peak compression to use quantization range better
-    // - small TPDF-like dither before quantization to reduce "grainy" artifacts
-    static uint32_t lfsr = 0x12345678u;
-    constexpr int kDrivePct = 108;
-    constexpr int kKnee = 11000;
-    constexpr int kCeil = 22000;
-    constexpr int kDitherAmp = 96;  // about 0.75 LSB in 8-bit domain
-
-    auto next_rand = [&]() -> int {
-        lfsr ^= lfsr << 13;
-        lfsr ^= lfsr >> 17;
-        lfsr ^= lfsr << 5;
-        return static_cast<int>(lfsr & 0xFF);
-    };
-
+    // Minimal conversion only: signed 16-bit PCM -> unsigned 8-bit PCM.
     for (size_t i = 0; i < n; ++i) {
-        int x = static_cast<int>(in[i]);
-        x = (x * kDrivePct) / 100;
-
-        int ax = abs(x);
-        if (ax > kKnee) {
-            const int sign = (x >= 0) ? 1 : -1;
-            const int over = ax - kKnee;
-            int y = kKnee + (over / 3);
-            if (y > kCeil) y = kCeil;
-            x = sign * y;
-        }
-
-        const int dither = (next_rand() - next_rand()) * kDitherAmp / 255;
-        x += dither;
-
-        int v = 128 + ((x + 128) >> 8);
+        int v = 128 + (static_cast<int>(in[i]) >> 8);
         if (v < 0) v = 0;
         if (v > 255) v = 255;
         out[i] = static_cast<uint8_t>(v);
@@ -292,6 +329,226 @@ static uint8_t default_pitch_mode_from_config()
     return Application::kTxPitchModeM1;
 #endif
 }
+
+static uint8_t linear16_to_mulaw(int16_t sample)
+{
+    static const int16_t kSegEnd[8] = { 0x00FF, 0x01FF, 0x03FF, 0x07FF, 0x0FFF, 0x1FFF, 0x3FFF, 0x7FFF };
+    constexpr int kBias = 0x84;
+    constexpr int kClip = 32635;
+
+    int pcm = sample;
+    uint8_t mask = 0xFF;
+    if (pcm < 0) {
+        pcm = -pcm;
+        mask = 0x7F;
+    }
+    if (pcm > kClip) {
+        pcm = kClip;
+    }
+    pcm += kBias;
+
+    uint8_t seg = 0;
+    while (seg < 8 && pcm > kSegEnd[seg]) {
+        ++seg;
+    }
+    if (seg >= 8) {
+        return static_cast<uint8_t>(0x7F ^ mask);
+    }
+    const uint8_t uval = static_cast<uint8_t>((seg << 4) | ((pcm >> (seg + 3)) & 0x0F));
+    return static_cast<uint8_t>(uval ^ mask);
+}
+
+static int16_t mulaw_to_linear16(uint8_t uval)
+{
+    constexpr int kBias = 0x84;
+    uval = static_cast<uint8_t>(~uval);
+    int t = ((uval & 0x0F) << 3) + kBias;
+    t <<= ((uval & 0x70) >> 4);
+    return (uval & 0x80) ? static_cast<int16_t>(kBias - t)
+                         : static_cast<int16_t>(t - kBias);
+}
+
+#if 1
+struct ScopeState {
+    bool initialized = false;
+    int w = 0;
+    int h = 0;
+    int mid = 0;
+    int x = 0;
+    int clip_top = 0;
+    int clip_bottom = 0;
+    uint16_t bg = TFT_BLACK;
+    uint16_t grid = TFT_DARKGREY;
+    uint16_t wave = TFT_CYAN;
+    uint16_t clip = TFT_RED;
+};
+
+static ScopeState s_scope;
+constexpr int kScopeSweepStep = 3;
+
+static constexpr int16_t scope_clip_pos()
+{
+#if PTT_TEST_AUDIO_PATH == PTT_TEST_AUDIO_PATH_16BIT
+    return 32767;
+#elif PTT_TEST_AUDIO_PATH == PTT_TEST_AUDIO_PATH_8BIT_MULAW
+    return 32124;  // approx max for G.711 u-law decode
+#else
+    return 32512;  // dequantized from 8-bit linear value 255
+#endif
+}
+
+static constexpr int16_t scope_clip_neg()
+{
+#if PTT_TEST_AUDIO_PATH == PTT_TEST_AUDIO_PATH_16BIT
+    return -32768;
+#elif PTT_TEST_AUDIO_PATH == PTT_TEST_AUDIO_PATH_8BIT_MULAW
+    return -32124;  // approx min for G.711 u-law decode
+#else
+    return -32768;  // dequantized from 8-bit linear value 0
+#endif
+}
+
+static int sample_to_scope_y(int16_t s)
+{
+    const int amp = (s_scope.h / 2) - 2;
+    int y = s_scope.mid - static_cast<int>((static_cast<int32_t>(s) * amp) / 32768);
+    if (y < 0) y = 0;
+    if (y >= s_scope.h) y = s_scope.h - 1;
+    return y;
+}
+
+static void scope_clear_and_grid()
+{
+    M5.Display.fillScreen(s_scope.bg);
+    M5.Display.drawFastHLine(0, s_scope.mid, s_scope.w, s_scope.grid);
+    M5.Display.drawFastHLine(0, s_scope.clip_top, s_scope.w, s_scope.grid);
+    M5.Display.drawFastHLine(0, s_scope.clip_bottom, s_scope.w, s_scope.grid);
+}
+
+static void scope_init_fullscreen_landscape()
+{
+    display_lock();
+    M5.Display.setRotation(1);  // landscape, full-width scope for test mode
+    s_scope.w = M5.Display.width();
+    s_scope.h = M5.Display.height();
+    s_scope.mid = s_scope.h / 2;
+    s_scope.x = 0;
+    s_scope.clip_top = sample_to_scope_y(scope_clip_pos());
+    s_scope.clip_bottom = sample_to_scope_y(scope_clip_neg());
+    scope_clear_and_grid();
+    display_unlock();
+    s_scope.initialized = true;
+}
+
+static void scope_plot_chunk_i16(const int16_t *samples, size_t n)
+{
+    if (!s_scope.initialized) {
+        scope_init_fullscreen_landscape();
+    }
+    if (!samples || n == 0) {
+        return;
+    }
+
+    int16_t vmin = 32767;
+    int16_t vmax = -32768;
+    bool clipped = false;
+    for (size_t i = 0; i < n; ++i) {
+        const int16_t s = samples[i];
+        if (s < vmin) vmin = s;
+        if (s > vmax) vmax = s;
+        if (s >= scope_clip_pos() || s <= scope_clip_neg()) {
+            clipped = true;
+        }
+    }
+
+    const int x = s_scope.x;
+    int y1 = sample_to_scope_y(vmax);
+    int y2 = sample_to_scope_y(vmin);
+    if (y1 > y2) {
+        const int tmp = y1;
+        y1 = y2;
+        y2 = tmp;
+    }
+
+    display_lock();
+    M5.Display.drawFastVLine(x, 0, s_scope.h, s_scope.bg);
+    if ((x % 20) == 0) {
+        M5.Display.drawFastVLine(x, 0, s_scope.h, s_scope.grid);
+    }
+    M5.Display.drawPixel(x, s_scope.mid, s_scope.grid);
+    M5.Display.drawPixel(x, s_scope.clip_top, s_scope.grid);
+    M5.Display.drawPixel(x, s_scope.clip_bottom, s_scope.grid);
+    M5.Display.drawFastVLine(x, y1, (y2 - y1) + 1, clipped ? s_scope.clip : s_scope.wave);
+    if (clipped) {
+        M5.Display.drawPixel(x, 0, s_scope.clip);
+        M5.Display.drawPixel(x, s_scope.h - 1, s_scope.clip);
+    }
+    display_unlock();
+
+    s_scope.x = (x + kScopeSweepStep) % s_scope.w;
+    if (s_scope.x == 0) {
+        display_lock();
+        scope_clear_and_grid();
+        display_unlock();
+    }
+}
+
+static void scope_plot_chunk_u8_linear(const uint8_t *samples, size_t n)
+{
+    if (!s_scope.initialized) {
+        scope_init_fullscreen_landscape();
+    }
+    if (!samples || n == 0) {
+        return;
+    }
+
+    uint8_t vmin = 255;
+    uint8_t vmax = 0;
+    bool clipped = false;
+    for (size_t i = 0; i < n; ++i) {
+        const uint8_t s = samples[i];
+        if (s < vmin) vmin = s;
+        if (s > vmax) vmax = s;
+        if (s == 0 || s == 255) {
+            clipped = true;
+        }
+    }
+
+    const int16_t vmax16 = static_cast<int16_t>((static_cast<int16_t>(vmax) - 128) << 8);
+    const int16_t vmin16 = static_cast<int16_t>((static_cast<int16_t>(vmin) - 128) << 8);
+
+    const int x = s_scope.x;
+    int y1 = sample_to_scope_y(vmax16);
+    int y2 = sample_to_scope_y(vmin16);
+    if (y1 > y2) {
+        const int tmp = y1;
+        y1 = y2;
+        y2 = tmp;
+    }
+
+    display_lock();
+    M5.Display.drawFastVLine(x, 0, s_scope.h, s_scope.bg);
+    if ((x % 20) == 0) {
+        M5.Display.drawFastVLine(x, 0, s_scope.h, s_scope.grid);
+    }
+    M5.Display.drawPixel(x, s_scope.mid, s_scope.grid);
+    M5.Display.drawPixel(x, s_scope.clip_top, s_scope.grid);
+    M5.Display.drawPixel(x, s_scope.clip_bottom, s_scope.grid);
+    M5.Display.drawFastVLine(x, y1, (y2 - y1) + 1, clipped ? s_scope.clip : s_scope.wave);
+    if (clipped) {
+        M5.Display.drawPixel(x, 0, s_scope.clip);
+        M5.Display.drawPixel(x, s_scope.h - 1, s_scope.clip);
+    }
+    display_unlock();
+
+    s_scope.x = (x + kScopeSweepStep) % s_scope.w;
+    if (s_scope.x == 0) {
+        display_lock();
+        scope_clear_and_grid();
+        display_unlock();
+    }
+}
+#endif
 
 #if TALKIE_TARGET_M5STICKS3
 static void draw_battery_status_icon(uint16_t status_color)
@@ -511,21 +768,30 @@ void Application::begin()
     dump_mic_wav_to_spiffs_10s();
 #endif
 
+#if !PTT_LOCAL_PLAYBACK_TEST_MODE
     WiFi.mode(WIFI_STA);
     WiFi.disconnect();
-    WiFi.setSleep(true);
+    WiFi.setSleep(false);
 
     Serial.print("My MAC Address is: ");
     Serial.println(WiFi.macAddress());
 
     m_transport->begin();
+#endif
 
     M5.Speaker.begin();
     M5.Speaker.setVolume(m_speaker_volume);
+#if !PTT_LOCAL_PLAYBACK_TEST_MODE
     M5.Speaker.tone(1200, 80);
+#endif
 
     TaskHandle_t task_handle;
+#if defined(CONFIG_FREERTOS_UNICORE) && CONFIG_FREERTOS_UNICORE
     xTaskCreate(application_task, "application_task", 8192, this, 1, &task_handle);
+#else
+    constexpr BaseType_t kApplicationTaskCore = 1;
+    xTaskCreatePinnedToCore(application_task, "application_task", 8192, this, 1, &task_handle, kApplicationTaskCore);
+#endif
 }
 
 void Application::setChannel(uint16_t ch)
@@ -709,19 +975,182 @@ void Application::dispTxPower(int16_t dbm)
 
 void Application::loop()
 {
+#if PTT_LOCAL_PLAYBACK_TEST_MODE
+    constexpr size_t kRecordChunkSamples = 128;
+    constexpr uint32_t kMaxRecordMs = 5000;
+    constexpr size_t kMaxRecordSamples = (SAMPLE_RATE * kMaxRecordMs) / 1000;
+    int16_t *mic_chunk_samples = reinterpret_cast<int16_t *>(malloc(sizeof(int16_t) * kRecordChunkSamples));
+    int16_t *record_samples_i16 = reinterpret_cast<int16_t *>(malloc(sizeof(int16_t) * kMaxRecordSamples));
+    uint8_t *record_samples_u8 = reinterpret_cast<uint8_t *>(malloc(kMaxRecordSamples));
+    bool mic_active = false;
+    bool spk_active = true;
+    bool idle_status_drawn = false;
+    int16_t play_samples_mono[kRecordChunkSamples];
+    uint32_t last_test_u8_log_ms = 0;
+    uint8_t test_u8_min = 255;
+    uint8_t test_u8_max = 0;
+
+    if (!mic_chunk_samples || !record_samples_i16 || !record_samples_u8) {
+        Serial.println("PTT test mode: failed to allocate record buffers");
+        if (mic_chunk_samples) free(mic_chunk_samples);
+        if (record_samples_i16) free(record_samples_i16);
+        if (record_samples_u8) free(record_samples_u8);
+        vTaskDelete(nullptr);
+    }
+
+    while (true) {
+        if (!M5.BtnA.isPressed()) {
+            if (!idle_status_drawn && s_scope.initialized) {
+                idle_status_drawn = true;
+            }
+            vTaskDelay(pdMS_TO_TICKS(5));
+            continue;
+        }
+
+        idle_status_drawn = false;
+        if (spk_active) {
+            M5.Speaker.stop();
+            M5.Speaker.end();
+            spk_active = false;
+        }
+        if (!mic_active) {
+            M5.Mic.begin();
+            mic_active = true;
+        }
+
+        scope_init_fullscreen_landscape();
+        begin_tx_session();
+        uint32_t start_ms = millis();
+        size_t recorded_samples = 0;
+        while (recorded_samples < kMaxRecordSamples) {
+            if (!M5.BtnA.isPressed()) {
+                break;
+            }
+            if (millis() - start_ms >= kMaxRecordMs) {
+                break;
+            }
+
+            size_t chunk_samples = kRecordChunkSamples;
+            const size_t remain = kMaxRecordSamples - recorded_samples;
+            if (chunk_samples > remain) {
+                chunk_samples = remain;
+            }
+            bool ok = M5.Mic.record(mic_chunk_samples, chunk_samples, SAMPLE_RATE, false);
+            if (!ok) {
+                memset(mic_chunk_samples, 0, chunk_samples * sizeof(int16_t));
+            }
+#if PTT_TEST_AUDIO_PATH == PTT_TEST_AUDIO_PATH_16BIT
+            memcpy(record_samples_i16 + recorded_samples, mic_chunk_samples, chunk_samples * sizeof(int16_t));
+#elif PTT_TEST_AUDIO_PATH == PTT_TEST_AUDIO_PATH_8BIT_MULAW
+            for (size_t i = 0; i < chunk_samples; ++i) {
+                record_samples_u8[recorded_samples + i] = linear16_to_mulaw(mic_chunk_samples[i]);
+            }
+#else
+            {
+                // Match wireless TX path: int16 mic -> 8bit transport (no additional processing).
+                convert_i16_to_u8_tx_compatible(
+                    mic_chunk_samples,
+                    record_samples_u8 + recorded_samples,
+                    chunk_samples);
+            }
+#endif
+            recorded_samples += chunk_samples;
+            vTaskDelay(pdMS_TO_TICKS(1));
+        }
+
+        if (mic_active) {
+            M5.Mic.end();
+            mic_active = false;
+        }
+        if (!spk_active) {
+            M5.Speaker.begin();
+            M5.Speaker.setVolume(m_speaker_volume);
+            spk_active = true;
+        }
+
+        size_t played_samples = 0;
+        while (played_samples < recorded_samples) {
+            size_t chunk_samples = kRecordChunkSamples;
+            const size_t remain = recorded_samples - played_samples;
+            if (chunk_samples > remain) {
+                chunk_samples = remain;
+            }
+#if PTT_TEST_AUDIO_PATH == PTT_TEST_AUDIO_PATH_16BIT
+            while (M5.Speaker.isPlaying()) {
+                vTaskDelay(pdMS_TO_TICKS(1));
+            }
+            M5.Speaker.playRaw(record_samples_i16 + played_samples, chunk_samples, SAMPLE_RATE, false, 1, -1, true);
+            scope_plot_chunk_i16(record_samples_i16 + played_samples, chunk_samples);
+#elif PTT_TEST_AUDIO_PATH == PTT_TEST_AUDIO_PATH_8BIT_LINEAR
+            for (size_t i = 0; i < chunk_samples; ++i) {
+                const uint8_t v = record_samples_u8[played_samples + i];
+                if (v < test_u8_min) test_u8_min = v;
+                if (v > test_u8_max) test_u8_max = v;
+            }
+            uint32_t now_ms = millis();
+            if (now_ms - last_test_u8_log_ms >= 1000) {
+                Serial.printf("TEST u8 range: min=%u max=%u\n",
+                              static_cast<unsigned>(test_u8_min),
+                              static_cast<unsigned>(test_u8_max));
+                test_u8_min = 255;
+                test_u8_max = 0;
+                last_test_u8_log_ms = now_ms;
+            }
+            while (M5.Speaker.isPlaying()) {
+                vTaskDelay(pdMS_TO_TICKS(1));
+            }
+            M5.Speaker.playRaw(record_samples_u8 + played_samples, chunk_samples, SAMPLE_RATE, false, 1, -1, true);
+            scope_plot_chunk_u8_linear(record_samples_u8 + played_samples, chunk_samples);
+#else
+            for (size_t i = 0; i < chunk_samples; ++i) {
+                int16_t s = 0;
+#if PTT_TEST_AUDIO_PATH == PTT_TEST_AUDIO_PATH_8BIT_MULAW
+                s = mulaw_to_linear16(record_samples_u8[played_samples + i]);
+#else
+                s = static_cast<int16_t>((static_cast<int16_t>(record_samples_u8[played_samples + i]) - 128) << 8);
+#endif
+                play_samples_mono[i] = s;
+            }
+            while (M5.Speaker.isPlaying()) {
+                vTaskDelay(pdMS_TO_TICKS(1));
+            }
+            M5.Speaker.playRaw(play_samples_mono, chunk_samples, SAMPLE_RATE, false, 1, -1, true);
+            scope_plot_chunk_i16(play_samples_mono, chunk_samples);
+#endif
+            played_samples += chunk_samples;
+            vTaskDelay(pdMS_TO_TICKS(1));
+        }
+        while (M5.Speaker.isPlaying()) {
+            vTaskDelay(pdMS_TO_TICKS(1));
+        }
+
+        // Prevent immediate re-trigger while the button remains held after timeout.
+        while (M5.BtnA.isPressed()) {
+            vTaskDelay(pdMS_TO_TICKS(5));
+        }
+    }
+#else
     constexpr size_t mic_chunk_samples = 128;
-    constexpr size_t play_chunk_bytes = 128;  // 8-bit PCM from OutputBuffer
-    constexpr bool enable_rssi_overlay = true;
+    constexpr size_t play_chunk_bytes = kRxPlayChunkBytes;
+    constexpr bool enable_tx_overlay = true;
+    constexpr bool enable_rx_overlay = true;
+    constexpr bool show_tx_waveform_after_tx = false;
+    constexpr bool show_rx_waveform = false;
+    constexpr bool force_sine_tx_on_ptt = false;
+    constexpr size_t tx_scope_max_samples = SAMPLE_RATE * 3;  // keep last 3 seconds
+    constexpr size_t rx_buffered_samples = SAMPLE_RATE * RX_RAM_BUFFERED_SECONDS;
     constexpr TickType_t synth_chunk_delay_ticks =
         pdMS_TO_TICKS((mic_chunk_samples * 1000 + SAMPLE_RATE - 1) / SAMPLE_RATE);
     int16_t *mic_samples = reinterpret_cast<int16_t *>(malloc(sizeof(int16_t) * mic_chunk_samples));
     uint8_t *mic_samples_u8 = reinterpret_cast<uint8_t *>(malloc(mic_chunk_samples));
-    uint8_t *play_samples = reinterpret_cast<uint8_t *>(malloc(play_chunk_bytes));
-    int16_t *play_samples_stereo = reinterpret_cast<int16_t *>(malloc(sizeof(int16_t) * play_chunk_bytes * 2));
+    uint8_t *tx_scope_samples = reinterpret_cast<uint8_t *>(malloc(tx_scope_max_samples));
+    uint8_t *rx_buffered_samples_u8 = reinterpret_cast<uint8_t *>(malloc(rx_buffered_samples));
     bool mic_active = false;
     bool spk_active = true;
     uint32_t last_rssi_draw_ms = 0;
     uint32_t last_diag_ms = 0;
+    uint8_t rx_level_min = 255;
+    uint8_t rx_level_max = 0;
     uint32_t mic_record_fail_count = 0;
     const uint32_t ptt_enable_after_ms = millis() + 1000;
     float tone_phase = 0.0f;
@@ -730,10 +1159,28 @@ void Application::loop()
     const float tone_phase_step = two_pi * tone_freq_hz / static_cast<float>(SAMPLE_RATE);
     constexpr int16_t tone_amplitude = 12000;
 
-    if (!mic_samples || !mic_samples_u8 || !play_samples || !play_samples_stereo) {
+    if (!mic_samples || !mic_samples_u8 || !tx_scope_samples || !rx_buffered_samples_u8) {
         Serial.println("Failed to allocate audio buffers");
         vTaskDelete(nullptr);
     }
+
+#if !RX_RAM_BUFFERED_PLAYBACK_MODE
+    if (!s_rx_playback_task_handle) {
+        s_rx_playback_state.output_buffer = m_output_buffer;
+        s_rx_playback_state.enabled = true;
+        s_rx_playback_state.terminate = false;
+        s_rx_playback_state.ready_after_ms = millis() + 60;
+        s_rx_playback_state.show_waveform = show_rx_waveform;
+        s_rx_playback_state.last_rx_level_log_ms = millis();
+#if defined(CONFIG_FREERTOS_UNICORE) && CONFIG_FREERTOS_UNICORE
+        xTaskCreate(rx_playback_task, "rx_playback_task", 4096, &s_rx_playback_state, 2, &s_rx_playback_task_handle);
+#else
+        // Keep audio playback off the WiFi-heavy core to reduce real-time jitter.
+        constexpr BaseType_t kRxPlaybackTaskCore = 1;
+        xTaskCreatePinnedToCore(rx_playback_task, "rx_playback_task", 4096, &s_rx_playback_state, 2, &s_rx_playback_task_handle, kRxPlaybackTaskCore);
+#endif
+    }
+#endif
 
     auto emit_diag = [&](const char* phase) {
         uint32_t now = millis();
@@ -778,8 +1225,11 @@ void Application::loop()
     while (true) {
         bool ptt = (millis() > ptt_enable_after_ms) && M5.BtnA.isPressed();
         if (ptt) {
+            size_t tx_scope_count = 0;
             begin_tx_session();
-            if (enable_rssi_overlay) {
+            s_rx_playback_state.enabled = false;
+            s_rx_playback_state.ready_after_ms = millis() + 60;
+            if (enable_tx_overlay) {
                 dispStatus(true);
                 int8_t tx_qdbm = 0;
                 if (esp_wifi_get_max_tx_power(&tx_qdbm) == ESP_OK) {
@@ -800,7 +1250,7 @@ void Application::loop()
 
             unsigned long start_time = millis();
             while (millis() - start_time < 1000 || M5.BtnA.isPressed()) {
-                if (enable_rssi_overlay) {
+                if (enable_tx_overlay) {
                     uint32_t now = millis();
                     if (now - last_rssi_draw_ms >= 500) {
                         dispStatus(true);
@@ -813,37 +1263,44 @@ void Application::loop()
                 }
                 bool ready = false;
                 size_t send_samples = mic_chunk_samples;
-#if AUDIO_DIAG_SOURCE == AUDIO_DIAG_SRC_MIC
-                ready = M5.Mic.record(mic_samples, mic_chunk_samples, SAMPLE_RATE, false);
-                if (!ready) {
-                    ++mic_record_fail_count;
-                }
-#elif AUDIO_DIAG_SOURCE == AUDIO_DIAG_SRC_SILENCE
-                memset(mic_samples, 0, sizeof(int16_t) * mic_chunk_samples);
-                ready = true;
-#elif AUDIO_DIAG_SOURCE == AUDIO_DIAG_SRC_TONE
-                for (size_t i = 0; i < mic_chunk_samples; ++i) {
-                    mic_samples[i] = static_cast<int16_t>(sinf(tone_phase) * tone_amplitude);
-                    tone_phase += tone_phase_step;
-                    if (tone_phase >= two_pi) {
-                        tone_phase -= two_pi;
+                if (force_sine_tx_on_ptt) {
+                    for (size_t i = 0; i < mic_chunk_samples; ++i) {
+                        mic_samples[i] = static_cast<int16_t>(sinf(tone_phase) * tone_amplitude);
+                        tone_phase += tone_phase_step;
+                        if (tone_phase >= two_pi) {
+                            tone_phase -= two_pi;
+                        }
                     }
-                }
-                ready = true;
+                    ready = true;
+                } else {
+#if AUDIO_DIAG_SOURCE == AUDIO_DIAG_SRC_MIC
+                    ready = M5.Mic.record(mic_samples, mic_chunk_samples, SAMPLE_RATE, false);
+                    if (!ready) {
+                        ++mic_record_fail_count;
+                    }
+#elif AUDIO_DIAG_SOURCE == AUDIO_DIAG_SRC_SILENCE
+                    memset(mic_samples, 0, sizeof(int16_t) * mic_chunk_samples);
+                    ready = true;
+#elif AUDIO_DIAG_SOURCE == AUDIO_DIAG_SRC_TONE
+                    for (size_t i = 0; i < mic_chunk_samples; ++i) {
+                        mic_samples[i] = static_cast<int16_t>(sinf(tone_phase) * tone_amplitude);
+                        tone_phase += tone_phase_step;
+                        if (tone_phase >= two_pi) {
+                            tone_phase -= two_pi;
+                        }
+                    }
+                    ready = true;
 #endif
+                }
 
                 if (ready) {
 #if AUDIO_DIAG_SOURCE == AUDIO_DIAG_SRC_MIC
                     convert_i16_to_u8_tx_compatible(mic_samples, mic_samples_u8, send_samples);
-                    switch (m_tx_pitch_mode) {
-                        case kTxPitchModeM2:
-                            apply_octave_up_simple_u8_block(mic_samples_u8, send_samples);
-                            break;
-                        case kTxPitchModeM3:
-                            apply_triple_speed_simple_u8_block(mic_samples_u8, send_samples);
-                            break;
-                        default:
-                            break;
+                    if (show_tx_waveform_after_tx && tx_scope_count < tx_scope_max_samples) {
+                        size_t remain = tx_scope_max_samples - tx_scope_count;
+                        size_t ncopy = (send_samples < remain) ? send_samples : remain;
+                        memcpy(tx_scope_samples + tx_scope_count, mic_samples_u8, ncopy);
+                        tx_scope_count += ncopy;
                     }
                     for (size_t i = 0; i < send_samples; ++i) {
                         m_transport->add_sample_u8(mic_samples_u8[i]);
@@ -872,15 +1329,83 @@ void Application::loop()
                 M5.Speaker.begin();
                 M5.Speaker.setVolume(m_speaker_volume);
                 spk_active = true;
+                s_rx_playback_state.ready_after_ms = millis() + 60;
+                s_rx_playback_state.enabled = true;
+            }
+            if (show_tx_waveform_after_tx && tx_scope_count > 0) {
+                scope_init_fullscreen_landscape();
+                size_t ofs = 0;
+                while (ofs < tx_scope_count) {
+                    size_t n = (tx_scope_count - ofs > play_chunk_bytes) ? play_chunk_bytes : (tx_scope_count - ofs);
+                    scope_plot_chunk_u8_linear(tx_scope_samples + ofs, n);
+                    ofs += n;
+                }
             }
         }
 
-        unsigned long start_time = millis();
-        if (enable_rssi_overlay) {
+        if (enable_rx_overlay) {
             dispStatus(false);
         }
+
+#if RX_RAM_BUFFERED_PLAYBACK_MODE
+        size_t captured = 0;
+        while (captured < rx_buffered_samples && !M5.BtnA.isPressed()) {
+            const size_t n = (rx_buffered_samples - captured > play_chunk_bytes)
+                ? play_chunk_bytes
+                : (rx_buffered_samples - captured);
+            m_output_buffer->remove_samples(rx_buffered_samples_u8 + captured, static_cast<int>(n));
+            for (size_t i = 0; i < n; ++i) {
+                const uint8_t v = rx_buffered_samples_u8[captured + i];
+                if (v < rx_level_min) rx_level_min = v;
+                if (v > rx_level_max) rx_level_max = v;
+            }
+            uint32_t now_ms = millis();
+            if (now_ms - last_rx_level_log_ms >= 1000) {
+                Serial.printf("RX u8 range: min=%u max=%u\n",
+                              static_cast<unsigned>(rx_level_min),
+                              static_cast<unsigned>(rx_level_max));
+                rx_level_min = 255;
+                rx_level_max = 0;
+                last_rx_level_log_ms = now_ms;
+            }
+            if (show_rx_waveform) {
+                scope_plot_chunk_u8_linear(rx_buffered_samples_u8 + captured, n);
+            }
+            captured += n;
+            vTaskDelay(pdMS_TO_TICKS(1));
+            emit_diag("RX_CAP");
+        }
+
+        if (!M5.BtnA.isPressed() && captured > 0) {
+            if (!spk_active) {
+                M5.Speaker.begin();
+                M5.Speaker.setVolume(m_speaker_volume);
+                spk_active = true;
+            }
+            size_t ofs = 0;
+            while (ofs < captured && !M5.BtnA.isPressed()) {
+                const size_t n = (captured - ofs > play_chunk_bytes)
+                    ? play_chunk_bytes
+                    : (captured - ofs);
+                while (M5.Speaker.isPlaying()) {
+                    vTaskDelay(pdMS_TO_TICKS(1));
+                }
+                M5.Speaker.playRaw(rx_buffered_samples_u8 + ofs, n, SAMPLE_RATE, false, 1, -1, true);
+                if (show_rx_waveform) {
+                    scope_plot_chunk_u8_linear(rx_buffered_samples_u8 + ofs, n);
+                }
+                ofs += n;
+                vTaskDelay(pdMS_TO_TICKS(1));
+                emit_diag("RX_PLAY");
+            }
+            while (M5.Speaker.isPlaying()) {
+                vTaskDelay(pdMS_TO_TICKS(1));
+            }
+        }
+#else
+        unsigned long start_time = millis();
         while (millis() - start_time < 1000 || !M5.BtnA.isPressed()) {
-            if (enable_rssi_overlay) {
+            if (enable_rx_overlay) {
                 uint32_t now = millis();
                 if (now - last_rssi_draw_ms >= 500) {  // lower UI refresh load
                     dispStatus(false);
@@ -893,20 +1418,13 @@ void Application::loop()
                 M5.Speaker.begin();
                 M5.Speaker.setVolume(m_speaker_volume);
                 spk_active = true;
+                s_rx_playback_state.ready_after_ms = millis() + 60;
+                s_rx_playback_state.enabled = true;
             }
-            m_output_buffer->remove_samples(play_samples, play_chunk_bytes);
-            for (size_t i = 0; i < play_chunk_bytes; ++i) {
-                // Convert unsigned 8-bit PCM (0..255, center=128) to signed 16-bit PCM.
-                int16_t s = static_cast<int16_t>((static_cast<int16_t>(play_samples[i]) - 128) << 8);
-                play_samples_stereo[i * 2 + 0] = s;
-                play_samples_stereo[i * 2 + 1] = s;
-            }
-            while (M5.Speaker.isPlaying()) {
-                vTaskDelay(pdMS_TO_TICKS(1));
-            }
-            M5.Speaker.playRaw(play_samples_stereo, play_chunk_bytes * 2, SAMPLE_RATE, true, 1, -1, true);
             vTaskDelay(pdMS_TO_TICKS(1));
             emit_diag("RX");
         }
+#endif
     }
+#endif
 }
