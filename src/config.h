@@ -32,6 +32,8 @@
 #endif
 // ESP-NOW Long Range mode
 #define ESPNOW_LONG_RANGE
+// ESP-NOW payload magic header text for packet filtering
+#define ESPNOW_PACKET_MAGIC_TEXT  "ESPT1"
 
 // Which channel is the I2S microphone on? I2S_CHANNEL_FMT_ONLY_LEFT or I2S_CHANNEL_FMT_ONLY_RIGHT
 // Generally they will default to LEFT - but you may need to attach the L/R pin to GND
