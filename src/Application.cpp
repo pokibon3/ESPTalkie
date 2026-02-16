@@ -708,7 +708,7 @@ void Application::begin()
 #if !PTT_LOCAL_PLAYBACK_TEST_MODE
     WiFi.mode(WIFI_STA);
     WiFi.disconnect();
-    WiFi.setSleep(false);
+    WiFi.setSleep(true);
 
     Serial.print("My MAC Address is: ");
     Serial.println(WiFi.macAddress());
