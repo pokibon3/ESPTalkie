@@ -74,6 +74,28 @@
 #define MIC_WAV_DUMP_TO_SPIFFS  0
 #define MIC_WAV_DUMP_SECONDS    10
 
+// PTT local record/playback test mode:
+// BtnA press starts recording (max 5s), and playback starts when BtnA is released
+// or when 5s elapses. Uses current speaker volume setting.
+#define PTT_LOCAL_PLAYBACK_TEST_MODE 0
+
+// RX diagnostic mode:
+// Buffer received 8-bit PCM in RAM for a fixed window, then play back as a block.
+#define RX_RAM_BUFFERED_PLAYBACK_MODE 0
+#define RX_RAM_BUFFERED_SECONDS       5
+
+// RX playback chunk size (samples). Larger value reduces task wakeups but adds latency.
+#define RX_PLAY_CHUNK_SAMPLES 320
+
+// Test mode audio path selector
+#define PTT_TEST_AUDIO_PATH_16BIT        0
+#define PTT_TEST_AUDIO_PATH_8BIT_LINEAR  1
+#define PTT_TEST_AUDIO_PATH_8BIT_MULAW   2
+#define PTT_TEST_AUDIO_PATH              PTT_TEST_AUDIO_PATH_8BIT_LINEAR
+
+// 8-bit linear quantization compressor switch (used by conversion function)
+#define TX_8BIT_COMPRESSOR_ENABLE 0
+
 // Horizontal shake to change current setting (same effect as BtnB click)
 #define SHAKE_SWITCH_ENABLED     1
 #define SHAKE_SENSITIVITY_LOW    1
