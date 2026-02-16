@@ -58,11 +58,18 @@ static TaskHandle_t s_rx_playback_task_handle = nullptr;
 static void rx_playback_task(void *param)
 {
     auto *state = reinterpret_cast<RxPlaybackTaskState *>(param);
-    uint8_t *play_samples = reinterpret_cast<uint8_t *>(malloc(kRxPlayChunkBytes));
-    if (!state || !state->output_buffer || !play_samples) {
-        if (play_samples) free(play_samples);
+    uint8_t *play_buffers[3] = {
+        reinterpret_cast<uint8_t *>(malloc(kRxPlayChunkBytes)),
+        reinterpret_cast<uint8_t *>(malloc(kRxPlayChunkBytes)),
+        reinterpret_cast<uint8_t *>(malloc(kRxPlayChunkBytes))
+    };
+    if (!state || !state->output_buffer || !play_buffers[0] || !play_buffers[1] || !play_buffers[2]) {
+        if (play_buffers[0]) free(play_buffers[0]);
+        if (play_buffers[1]) free(play_buffers[1]);
+        if (play_buffers[2]) free(play_buffers[2]);
         vTaskDelete(nullptr);
     }
+    size_t buf_index = 0;
 
     while (!state->terminate) {
         if (!state->enabled) {
@@ -76,6 +83,7 @@ static void rx_playback_task(void *param)
             continue;
         }
 
+        uint8_t *play_samples = play_buffers[buf_index];
         state->output_buffer->remove_samples(play_samples, static_cast<int>(kRxPlayChunkBytes));
         for (size_t i = 0; i < kRxPlayChunkBytes; ++i) {
             const uint8_t v = play_samples[i];
@@ -93,14 +101,20 @@ static void rx_playback_task(void *param)
         if (state->show_waveform) {
             scope_plot_chunk_u8_linear(play_samples, kRxPlayChunkBytes);
         }
-        while (M5.Speaker.isPlaying()) {
+
+        // Runtime-generated audio should use rotating buffers and queued playback.
+        // Keep one fixed virtual channel to avoid restarting the stream each chunk.
+        const bool ok = M5.Speaker.playRaw(play_samples, kRxPlayChunkBytes, SAMPLE_RATE, false, 1, 0, false);
+        if (ok) {
+            buf_index = (buf_index + 1) % 3;
+        } else {
             vTaskDelay(pdMS_TO_TICKS(1));
         }
-        M5.Speaker.playRaw(play_samples, kRxPlayChunkBytes, SAMPLE_RATE, false, 1, -1, true);
-        vTaskDelay(pdMS_TO_TICKS(1));
     }
 
-    free(play_samples);
+    free(play_buffers[0]);
+    free(play_buffers[1]);
+    free(play_buffers[2]);
     vTaskDelete(nullptr);
 }
 
