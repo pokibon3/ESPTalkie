@@ -9,6 +9,7 @@
 
 #include "Application.h"
 #include "DisplaySync.h"
+#include "PaperColorUi.h"
 #include "UiLayout.h"
 #include "config.h"
 
@@ -40,6 +41,12 @@ constexpr int kDefaultVolumeLevel = 1;
 constexpr int kDefaultVolumeLevel = 3;
 #endif
 constexpr uint32_t kModeAutoClearMs = 5000;
+
+#if TALKIE_TARGET_M5PAPERCOLOR
+constexpr int kPaperButtonAPin = 10;
+constexpr int kPaperButtonBPin = 9;
+constexpr int kPaperButtonCPin = 1;
+#endif
 
 enum class ShakeAction : int8_t {
     None = 0,
@@ -265,21 +272,145 @@ uint8_t current_speaker_gain()
     return kVolumeTable[volume_level - 1];
 }
 
+#if TALKIE_TARGET_M5PAPERCOLOR
+void papercolor_loop()
+{
+    // A short debounce is enough because two separate buttons must be held.
+    // Keeping this small also makes the chord practical on the recessed keys.
+    constexpr uint32_t kChordHoldMs = 100;
+    constexpr uint32_t kSettingsCommitDelayMs = 2000;
+    static bool chord_tracking = false;
+    static bool chord_triggered = false;
+    static uint32_t chord_started_ms = 0;
+    static bool settings_dirty = false;
+    static uint32_t settings_changed_ms = 0;
+
+    papercolor_ui_service();
+
+    // Use the physical labels from the Paper Color pin map. M5Unified 0.2.15
+    // exposes GPIO9 as BtnA and GPIO10 as BtnB, reversing physical A/B.
+    const bool a_pressed = digitalRead(kPaperButtonAPin) == LOW;
+    const bool b_pressed = digitalRead(kPaperButtonBPin) == LOW;
+    const bool c_pressed = digitalRead(kPaperButtonCPin) == LOW;
+
+    // Log each electrical transition so the physical button mapping can be
+    // verified on the connected unit without refreshing the E-Ink panel.
+    static uint8_t last_button_bits = 0xFF;
+    const uint8_t button_bits =
+        (a_pressed ? 1U : 0U) |
+        ((b_pressed ? 1U : 0U) << 1) |
+        ((c_pressed ? 1U : 0U) << 2);
+    if (button_bits != last_button_bits) {
+        Serial.printf("PaperColor buttons: A=%u B=%u C=%u (GPIO10/9/1)\n",
+                      button_bits & 1U,
+                      (button_bits >> 1) & 1U,
+                      (button_bits >> 2) & 1U);
+        last_button_bits = button_bits;
+    }
+    if (a_pressed && b_pressed) {
+        if (!chord_tracking) {
+            chord_tracking = true;
+            chord_triggered = false;
+            chord_started_ms = millis();
+        }
+        if (!chord_triggered && millis() - chord_started_ms >= kChordHoldMs) {
+            Serial.println("PaperColor: A+B chord accepted; toggling page");
+            papercolor_ui_update_settings(channel, volume_level, tx_pitch_mode, application->getRSSI());
+            if (papercolor_ui_settings_visible()) {
+                papercolor_ui_show_badge();
+            } else {
+                papercolor_ui_show_settings();
+            }
+            chord_triggered = true;
+            settings_dirty = false;
+        }
+        vTaskDelay(pdMS_TO_TICKS(5));
+        return;
+    }
+    if (chord_tracking) {
+        if (!a_pressed && !b_pressed) {
+            chord_tracking = false;
+            chord_triggered = false;
+        }
+        vTaskDelay(pdMS_TO_TICKS(5));
+        return;
+    }
+
+    bool changed = false;
+    if (!papercolor_ui_settings_visible()) {
+        vTaskDelay(pdMS_TO_TICKS(5));
+        return;
+    }
+    // Physical B / left-middle (GPIO9) is reported as BtnA.
+    if (M5.BtnA.wasHold()) {
+        channel = wrapped_step(channel, 1, 13, -1);
+        application->setChannel(static_cast<uint16_t>(channel));
+        prefs.putInt("channel", channel);
+        changed = true;
+    } else if (M5.BtnA.wasClicked()) {
+        channel = wrapped_step(channel, 1, 13, +1);
+        application->setChannel(static_cast<uint16_t>(channel));
+        prefs.putInt("channel", channel);
+        changed = true;
+    // Physical A / left-upper (GPIO10) is reported as BtnB.
+    } else if (M5.BtnB.wasHold()) {
+        tx_pitch_mode = static_cast<uint8_t>(wrapped_step(
+            static_cast<int>(tx_pitch_mode),
+            static_cast<int>(Application::kTxPitchModeM1),
+            static_cast<int>(Application::kTxPitchModeM3),
+            +1));
+        application->setTxPitchMode(tx_pitch_mode);
+        prefs.putInt("txmode", tx_pitch_mode);
+        changed = true;
+    } else if (M5.BtnB.wasClicked()) {
+        volume_level = wrapped_step(volume_level, 1, 5, +1);
+        application->setSpeakerVolume(current_speaker_gain());
+        prefs.putInt("volume", volume_level);
+        changed = true;
+    }
+
+    if (changed) {
+        papercolor_ui_update_settings(channel, volume_level, tx_pitch_mode, application->getRSSI());
+        settings_dirty = true;
+        settings_changed_ms = millis();
+    }
+    if (settings_dirty && papercolor_ui_settings_visible() &&
+        millis() - settings_changed_ms >= kSettingsCommitDelayMs) {
+        papercolor_ui_show_settings();
+        settings_dirty = false;
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(5));
+}
+#endif
+
 }  // namespace
 
 void setup()
 {
     Serial.begin(115200);
     auto cfg = M5.config();
-#if TALKIE_TARGET_M5STICKS3
+#if TALKIE_TARGET_M5STICKS3 || TALKIE_TARGET_M5PAPERCOLOR
     cfg.output_power = false;
 #else
     cfg.output_power = true;
+#endif
+#if TALKIE_TARGET_M5PAPERCOLOR
+    // Keep the retained E-Ink image visible until the background display task
+    // has finished rendering the next page.
+    cfg.clear_display = false;
 #endif
 #if M5UNIFIED_USE_ATOMIC_ECHO_BASE
     cfg.external_speaker.atomic_echo = true;
 #endif
     M5.begin(cfg);
+#if TALKIE_TARGET_M5PAPERCOLOR
+    pinMode(kPaperButtonAPin, INPUT_PULLUP);
+    pinMode(kPaperButtonBPin, INPUT_PULLUP);
+    pinMode(kPaperButtonCPin, INPUT_PULLUP);
+    M5.Display.setRotation(0);
+    M5.Display.setEpdMode(epd_mode_t::epd_quality);
+#endif
 
     prefs.begin("esptalkie", false);
     channel = prefs.getInt("channel", 1);
@@ -294,9 +425,9 @@ void setup()
         tx_pitch_mode = Application::kTxPitchModeM1;
     }
 
-#if !PTT_LOCAL_PLAYBACK_TEST_MODE
+#if !PTT_LOCAL_PLAYBACK_TEST_MODE && !TALKIE_TARGET_M5PAPERCOLOR
     draw_layout();
-#else
+#elif PTT_LOCAL_PLAYBACK_TEST_MODE
     display_lock();
     M5.Display.setRotation(1);
     M5.Display.fillScreen(TFT_BLACK);
@@ -316,16 +447,23 @@ void setup()
                   static_cast<unsigned>(application->getSpeakerVolume()));
     mode_selected_at_ms = millis();
     application->begin();
+#if TALKIE_TARGET_M5PAPERCOLOR
+    papercolor_ui_begin(channel, volume_level, tx_pitch_mode);
+#endif
 #if !PTT_LOCAL_PLAYBACK_TEST_MODE
     application->dispStatus(false);
 #endif
 
-    Serial.println("M5StickS3 Walkie Talkie Application started");
+    Serial.println("ESP32Talkie Application started");
 }
 
 void loop()
 {
     M5.update();
+#if TALKIE_TARGET_M5PAPERCOLOR
+    papercolor_loop();
+    return;
+#endif
 #if PTT_LOCAL_PLAYBACK_TEST_MODE
     vTaskDelay(pdMS_TO_TICKS(5));
     return;

@@ -10,6 +10,7 @@
 #include "DisplaySync.h"
 #include "EspNowTransport.h"
 #include "OutputBuffer.h"
+#include "PaperColorUi.h"
 #include "UiLayout.h"
 #include "config.h"
 
@@ -21,6 +22,16 @@ constexpr size_t kMicWavWriteCacheSize = 8192;
 constexpr size_t kRxPlayChunkSamples = RX_PLAY_CHUNK_SAMPLES;
 constexpr size_t kRxPlayChunkBytes = kRxPlayChunkSamples;
 static uint8_t s_mic_wav_write_cache[kMicWavWriteCacheSize];
+
+static bool ptt_button_pressed()
+{
+#if TALKIE_TARGET_M5PAPERCOLOR
+    // Paper Color top button (physical C) is the dedicated PTT key.
+    return digitalRead(1) == LOW;
+#else
+    return M5.BtnA.isPressed();
+#endif
+}
 
 static void begin_tx_session()
 {
@@ -830,6 +841,10 @@ int16_t Application::getRSSI()
 
 void Application::dispRSSI(int16_t rssi)
 {
+#if TALKIE_TARGET_M5PAPERCOLOR
+    (void)rssi;
+    return;
+#endif
     display_lock();
     const uint16_t kBarLeftOn = TFT_GREEN;
     const uint16_t kBarRightOn = TFT_RED;
@@ -880,6 +895,18 @@ void Application::dispRSSI(int16_t rssi)
 
 void Application::dispStatus(bool transmitting)
 {
+#if TALKIE_TARGET_M5PAPERCOLOR
+    if (transmitting) {
+        papercolor_ui_set_radio_state(PaperColorRadioState::Transmitting);
+    } else {
+        const uint32_t last_rx_ms = m_transport ? m_transport->getLastRxMs() : 0;
+        const bool receiving = last_rx_ms != 0 && (millis() - last_rx_ms) < 250;
+        papercolor_ui_set_radio_state(receiving
+            ? PaperColorRadioState::Receiving
+            : PaperColorRadioState::Idle);
+    }
+    return;
+#endif
     display_lock();
     const uint16_t status_color = transmitting
         ? TFT_RED
@@ -926,6 +953,10 @@ void Application::dispStatus(bool transmitting)
 
 void Application::dispTxPower(int16_t dbm)
 {
+#if TALKIE_TARGET_M5PAPERCOLOR
+    (void)dbm;
+    return;
+#endif
     display_lock();
     const uint16_t kBarLeftOn = TFT_GREEN;
     const uint16_t kBarRightOn = TFT_RED;
@@ -999,7 +1030,7 @@ void Application::loop()
     }
 
     while (true) {
-        if (!M5.BtnA.isPressed()) {
+        if (!ptt_button_pressed()) {
             if (!idle_status_drawn && s_scope.initialized) {
                 idle_status_drawn = true;
             }
@@ -1023,7 +1054,7 @@ void Application::loop()
         uint32_t start_ms = millis();
         size_t recorded_samples = 0;
         while (recorded_samples < kMaxRecordSamples) {
-            if (!M5.BtnA.isPressed()) {
+            if (!ptt_button_pressed()) {
                 break;
             }
             if (millis() - start_ms >= kMaxRecordMs) {
@@ -1125,7 +1156,7 @@ void Application::loop()
         }
 
         // Prevent immediate re-trigger while the button remains held after timeout.
-        while (M5.BtnA.isPressed()) {
+        while (ptt_button_pressed()) {
             vTaskDelay(pdMS_TO_TICKS(5));
         }
     }
@@ -1169,7 +1200,7 @@ void Application::loop()
         vTaskDelete(nullptr);
     }
     while (true) {
-        bool ptt = (millis() > ptt_enable_after_ms) && M5.BtnA.isPressed();
+        bool ptt = (millis() > ptt_enable_after_ms) && ptt_button_pressed();
         if (ptt) {
             begin_tx_session();
             if (enable_tx_overlay) {
@@ -1202,7 +1233,7 @@ void Application::loop()
 #endif
 
             unsigned long start_time = millis();
-            while (millis() - start_time < 1000 || M5.BtnA.isPressed()) {
+            while (millis() - start_time < 1000 || ptt_button_pressed()) {
                 if (enable_tx_overlay) {
                     uint32_t now = millis();
                     if (now - last_rssi_draw_ms >= 500) {
@@ -1272,7 +1303,7 @@ void Application::loop()
 
 #if RX_RAM_BUFFERED_PLAYBACK_MODE
         size_t captured = 0;
-        while (captured < rx_buffered_samples && !M5.BtnA.isPressed()) {
+        while (captured < rx_buffered_samples && !ptt_button_pressed()) {
             const size_t n = (rx_buffered_samples - captured > play_chunk_bytes)
                 ? play_chunk_bytes
                 : (rx_buffered_samples - captured);
@@ -1295,14 +1326,14 @@ void Application::loop()
             vTaskDelay(pdMS_TO_TICKS(1));
         }
 
-        if (!M5.BtnA.isPressed() && captured > 0) {
+        if (!ptt_button_pressed() && captured > 0) {
             if (!spk_active) {
                 M5.Speaker.begin();
                 M5.Speaker.setVolume(m_speaker_volume);
                 spk_active = true;
             }
             size_t ofs = 0;
-            while (ofs < captured && !M5.BtnA.isPressed()) {
+            while (ofs < captured && !ptt_button_pressed()) {
                 const size_t n = (captured - ofs > play_chunk_bytes)
                     ? play_chunk_bytes
                     : (captured - ofs);
@@ -1318,7 +1349,7 @@ void Application::loop()
             }
         }
 #else
-        while (!M5.BtnA.isPressed()) {
+        while (!ptt_button_pressed()) {
             if (enable_rx_overlay) {
                 uint32_t now = millis();
                 if (now - last_rssi_draw_ms >= 500) {  // lower UI refresh load

@@ -26,6 +26,7 @@ public:
     friend void receiveCallback(const uint8_t *macAddr, const uint8_t *data, int dataLen);
     void        setRSSI(int16_t rssi) { m_rssi = rssi;}
     int16_t     getRSSI(void) override;
+    uint32_t    getLastRxMs(void) override { return m_last_rx_ms; }
     uint16_t    getWifiChannel(void) { return m_wifi_channel;}
     void        setWifiChannel(uint16_t ch);
     void        snapshot_and_reset_stats(uint32_t &rx_ok,

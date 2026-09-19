@@ -1,5 +1,5 @@
 ﻿# ESP32Talkie：WiFi音声トランシーバ
-M5StickS3で動作する、WiFi音声トランシーバのサンプルコードです。
+M5StickS3、M5AtomS3 + Atomic Echo Base、M5Paper Colorで動作する、WiFi音声トランシーバのサンプルコードです。
 2.4GHz WiFiで音声通信ができるライセンスフリーのトランシーバで、Espressif社のESP-NOWプロトコルを使用します。
 
 ![ESP32Talkie](ESP32Talkie.JPG)
@@ -23,7 +23,7 @@ M5StickS3で動作する、WiFi音声トランシーバのサンプルコード�
 - atomic14氏の [ESP32-walkie-talkie](https://github.com/atomic14/esp32-walkie-talkie) プロジェクトから、`transport` クラスおよび `OutputBuffer` クラスを流用・改造して利用しています。
 
 ## 使用方法
-- 現在の対象ボードは M5StickS3です。
+- デフォルトのビルド対象はM5StickS3です。
 - 送信音声は8bit 16kHzサンプリングで送受信しています。
 - 画面表示
   - 上段: `Receive / Transmit` ステータス
@@ -45,6 +45,25 @@ M5StickS3で動作する、WiFi音声トランシーバのサンプルコード�
     - `M2`: ケロケロボイス（倍速）
     - `M3`: ケロケロボイス（3倍速）
 
+### M5Paper Color
+
+- `platformio.ini`の対象環境は`m5stack-papercolor`です。
+- 通常時は400x600の名札画像を表示し、E-Ink画面は送受信中に更新しません。
+- LED表示:
+  - 緑: 待受
+  - 青: 受信
+  - 赤: 送信
+- 操作:
+  - 上ボタン: Push to Talk
+  - 左上 + 左中ボタン同時押し: 名札画面と設定画面を切替
+  - 名札画面では、左上/左中ボタンの単独操作は無効
+  - 以下の設定操作は設定画面でのみ有効
+  - 左上ボタン短押し: 音量を上げる
+  - 左上ボタン長押し: `M1/M2/M3`を切替
+  - 左中ボタン短押し: チャンネルを上げる
+  - 左中ボタン長押し: チャンネルを下げる
+- 名札画像は`assets/pokibon-transfer.png`をファームウェアへ埋め込みます。
+
 ## バージョン来歴
 - v1.0: 新規作成
 - v1.1: M5AtomS3 + Atomic Echo Base対応、ケロケロボイス対応
@@ -54,4 +73,3 @@ M5StickS3で動作する、WiFi音声トランシーバのサンプルコード�
 
 ## ライセンス
 　MIT License
-
