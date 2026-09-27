@@ -5,7 +5,9 @@ import math, cadquery as cq
 
 # ---- device & parameters
 DX0,DX1,DY0,DY1,DZ0,DZ1=0.1,70.1,0.0,103.0,-8.5,0.0
-CL_L,CL_R,CL_B,CL_Z=0.6,0.3,0.3,0.3
+# Side clearance per side. Real prints measured ~0.6mm lateral play with 0.15/0.15,
+# so the fit is tightened by 0.25mm per side (expected play ~0.1mm).
+CL_L,CL_R,CL_B,CL_Z=-0.1,-0.1,0.3,0.3
 W=2.0; BACK=2.4; LIP_T=1.2; LIP_W=1.4
 cx0,cx1,cy0=DX0-CL_L,DX1+CL_R,DY0-CL_B
 cz0,cz1=DZ0-CL_Z,DZ1+0.2
@@ -18,7 +20,7 @@ HOLE_D=5.0; HOLE_DY=6.5
 CHAMFER=0.6
 SLOT=0.7
 LATCH_Y0={'L':36.0,'R':42.5}
-BUMP={'L':1.2,'R':0.9}
+BUMP={'L':0.5,'R':0.5}   # = clearance + ~0.6mm engagement into the side recess
 BZ0,BZ1=-8.1,-6.7
 
 def box(x0,x1,y0,y1,z0,z1):
@@ -74,6 +76,10 @@ body=body.newObject(hole_edges).chamfer(CHAMFER)
 Zw0,Zw1=cz0+0.8,cz1-1.6
 body=body.cut(box(ox0-1,cx0+0.01,7.5,35.5,Zw0,Zw1))      # left: power, slot
 body=body.cut(box(cx1-0.01,ox1+1,30.0,41.5,Zw0,Zw1))     # right: slots
+# left: relief groove so the power button (protrudes ~0.5mm, z -6.2..-2.5) is not
+# pressed while the device slides in from the top past the latch section
+GROOVE=0.9
+body=body.cut(box(cx0-GROOVE,cx0+0.01,35.0,YEND+1,-6.8,-1.9))
 body=body.cut(box(4.0,18.0,oy0-1,cy0+0.01,cz0+0.4,oz1+1))  # USB-C
 body=body.cut(box(52.0,66.0,oy0-1,cy0+0.01,cz0-0.01,-2.5)) # Grove
 body=body.cut(box(52.0,66.0,oy0-1,10.0,oz0-1,cz0+0.01))    # Grove cable (back)
