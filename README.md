@@ -93,7 +93,7 @@ M5StickS3、M5AtomS3 + Atomic Echo Base、M5Paper Colorで動作する、WiFi音
 - M5Paper Colorを縦置きで首から下げるための猫耳ケースです（`doc/3d/`）。
   - `PaperColor_NekoCase.step` / `PaperColor_NekoCase.stl`: ケース本体
   - `PaperColor_NekoCase_build.py`: CadQueryによる生成スクリプト（寸法パラメータ変更可）
-  - `PaperColor.stl`: M5Stack公式の本体モデル（[M5_Hardware](https://github.com/m5stack/M5_Hardware/tree/master/Products/C151_PaperColor/Structures)）
+  - `PaperColor.stl`: M5Stack公式の本体モデル（[M5_Hardware](https://github.com/m5stack/M5_Hardware/tree/master/Products/C151_PaperColor/Structures)、MIT License, Copyright (c) 2021 M5Stack。ライセンス全文は`doc/3d/LICENSE_M5Stack_M5_Hardware.txt`）
 - 本体は上から差し込み、左右のラッチで固定します。猫耳のφ5mm穴にストラップを通します。
 - 上面（上ボタン・マイク・LED）は塞がず、側面ボタン・USB-C・Groveポートは開口しています。
 - 背面を下にしてサポートなしで印刷できます。
