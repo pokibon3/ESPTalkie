@@ -5,6 +5,7 @@
 #include <string.h>
 #include <SPIFFS.h>
 #include <esp_wifi.h>
+#include <esp_system.h>
 
 #include "Application.h"
 #include "DisplaySync.h"
@@ -26,11 +27,98 @@ static uint8_t s_mic_wav_write_cache[kMicWavWriteCacheSize];
 static bool ptt_button_pressed()
 {
 #if TALKIE_TARGET_M5PAPERCOLOR
-    // Paper Color top button (physical C) is the dedicated PTT key.
-    return digitalRead(1) == LOW;
+    // Paper Color top button (physical C) is PTT on the badge page only.
+    // On the settings page it selects the item to edit.
+    return papercolor_ui_ptt_pressed();
 #else
     return M5.BtnA.isPressed();
 #endif
+}
+
+// Receive priority: when another station is heard, TX is blocked (or stopped).
+// While PTT stays held (or continuous TX is on), TX resumes automatically once
+// the channel has been quiet for kRxEndMs plus a random backoff, so two
+// stations holding PTT don't keep colliding. Releasing PTT cancels the resume.
+constexpr uint32_t kRxBusyMs = 150;      // channel counts as busy this long after the last RX packet
+constexpr uint32_t kRxPreemptMs = 60;    // sustained RX needed to stop an ongoing TX
+constexpr uint32_t kRxEndMs = 300;       // silence after the last RX packet = other station finished
+constexpr uint32_t kResumeBackoffMaxMs = 300;
+// Continuous TX: double-tap PTT to start, double-tap again to stop.
+constexpr uint32_t kTapMaxPressMs = 300;   // a press shorter than this counts as a tap
+constexpr uint32_t kDoubleTapGapMs = 400;  // max release->press gap between the two taps
+constexpr uint32_t kPttDebounceMs = 20;
+static bool s_ptt_lockout = false;
+static uint32_t s_resume_backoff_ms = 0;
+static volatile bool s_continuous_tx = false;
+static Transport *s_ptt_transport = nullptr;
+
+static void set_ptt_lockout()
+{
+    s_ptt_lockout = true;
+    s_resume_backoff_ms = esp_random() % kResumeBackoffMaxMs;
+}
+
+static void update_ptt_taps(bool raw, uint32_t now)
+{
+    static bool stable = false;
+    static bool last_raw = false;
+    static uint32_t raw_changed_ms = 0;
+    static uint32_t press_ms = 0;
+    static uint32_t tap_release_ms = 0;
+    static bool have_tap = false;
+    static bool toggled_this_press = false;
+
+    if (raw != last_raw) {
+        last_raw = raw;
+        raw_changed_ms = now;
+    }
+    if (raw == stable || now - raw_changed_ms < kPttDebounceMs) {
+        return;
+    }
+    stable = raw;
+    if (stable) {
+        if (have_tap && now - tap_release_ms <= kDoubleTapGapMs) {
+            s_continuous_tx = !s_continuous_tx;
+            Serial.printf("PTT: continuous TX %s\n", s_continuous_tx ? "ON" : "OFF");
+            toggled_this_press = true;
+        }
+        have_tap = false;
+        press_ms = now;
+    } else {
+        if (toggled_this_press) {
+            toggled_this_press = false;
+        } else if (now - press_ms <= kTapMaxPressMs) {
+            have_tap = true;
+            tap_release_ms = now;
+        }
+    }
+}
+
+// Sample PTT at a fixed 5 ms rate, independent of the audio loop (which can
+// block for hundreds of ms while switching mic/speaker), so taps aren't missed.
+static void ptt_monitor_task(void *)
+{
+    while (true) {
+        update_ptt_taps(ptt_button_pressed(), millis());
+        vTaskDelay(pdMS_TO_TICKS(5));
+    }
+}
+
+static bool ptt_active()
+{
+    const bool raw = ptt_button_pressed();
+    if (!raw && !s_continuous_tx) {
+        s_ptt_lockout = false;
+        return false;
+    }
+    if (s_ptt_lockout && s_ptt_transport) {
+        const uint32_t last_rx = s_ptt_transport->getLastRxMs();
+        if (last_rx == 0 || millis() - last_rx >= kRxEndMs + s_resume_backoff_ms) {
+            Serial.println("PTT: RX ended, resuming TX");
+            s_ptt_lockout = false;
+        }
+    }
+    return !s_ptt_lockout;
 }
 
 static void begin_tx_session()
@@ -802,6 +890,9 @@ void Application::begin()
     constexpr BaseType_t kApplicationTaskCore = 1;
     xTaskCreatePinnedToCore(application_task, "application_task", 8192, this, 1, &task_handle, kApplicationTaskCore);
 #endif
+#if !PTT_LOCAL_PLAYBACK_TEST_MODE
+    xTaskCreate(ptt_monitor_task, "ptt_monitor", 3072, nullptr, 2, nullptr);
+#endif
 }
 
 void Application::setChannel(uint16_t ch)
@@ -897,7 +988,9 @@ void Application::dispStatus(bool transmitting)
 {
 #if TALKIE_TARGET_M5PAPERCOLOR
     if (transmitting) {
-        papercolor_ui_set_radio_state(PaperColorRadioState::Transmitting);
+        papercolor_ui_set_radio_state(s_continuous_tx
+            ? PaperColorRadioState::TransmittingContinuous
+            : PaperColorRadioState::Transmitting);
     } else {
         const uint32_t last_rx_ms = m_transport ? m_transport->getLastRxMs() : 0;
         const bool receiving = last_rx_ms != 0 && (millis() - last_rx_ms) < 250;
@@ -915,7 +1008,9 @@ void Application::dispStatus(bool transmitting)
     M5.Display.fillRect(0, 0, M5.Display.width(), kUiLayout.status_h, status_color);
     M5.Display.setFont(&fonts::Font0);
     M5.Display.setTextDatum(middle_center);
-    const char* label = transmitting ? "Transmit" : "Receive";
+    const char* label = transmitting
+        ? (s_continuous_tx ? "CONT TX" : "Transmit")
+        : "Receive";
     int status_text_area_w = M5.Display.width();
 #if TALKIE_TARGET_M5STICKS3
     constexpr int kBatteryAreaW = 31;  // battery icon + right margin on StickS3
@@ -1199,8 +1294,9 @@ void Application::loop()
         Serial.println("Failed to allocate audio buffers");
         vTaskDelete(nullptr);
     }
+    s_ptt_transport = m_transport;
     while (true) {
-        bool ptt = (millis() > ptt_enable_after_ms) && ptt_button_pressed();
+        bool ptt = (millis() > ptt_enable_after_ms) && ptt_active();
         if (ptt) {
             begin_tx_session();
             if (enable_tx_overlay) {
@@ -1233,7 +1329,41 @@ void Application::loop()
 #endif
 
             unsigned long start_time = millis();
-            while (millis() - start_time < 1000 || ptt_button_pressed()) {
+            uint32_t rx_first_ms = 0;
+            // Break-in: if we key up while the other station is talking, its
+            // ongoing stream must not stop us. Only RX that starts after the
+            // channel has gone quiet preempts this TX (the other side yields).
+            bool ignore_ongoing_rx = false;
+            {
+                const uint32_t last_rx = m_transport->getLastRxMs();
+                ignore_ongoing_rx = last_rx != 0 && millis() - last_rx < kRxBusyMs;
+                if (ignore_ongoing_rx) {
+                    Serial.println("PTT: break-in over ongoing RX");
+                }
+            }
+            while (millis() - start_time < 1000 || ptt_active()) {
+                {
+                    const uint32_t last_rx = m_transport->getLastRxMs();
+                    const uint32_t now = millis();
+                    if (ignore_ongoing_rx && now - last_rx >= kRxBusyMs) {
+                        ignore_ongoing_rx = false;
+                    }
+                    const bool rx_during_tx = !ignore_ongoing_rx && last_rx != 0 &&
+                        static_cast<int32_t>(last_rx - static_cast<uint32_t>(start_time)) >= 0 &&
+                        now - last_rx < kRxBusyMs;
+                    if (rx_during_tx) {
+                        if (rx_first_ms == 0) {
+                            rx_first_ms = last_rx;
+                        }
+                        if (last_rx - rx_first_ms >= kRxPreemptMs) {
+                            Serial.println("PTT: incoming RX, switching to receive");
+                            set_ptt_lockout();
+                            break;
+                        }
+                    } else {
+                        rx_first_ms = 0;
+                    }
+                }
                 if (enable_tx_overlay) {
                     uint32_t now = millis();
                     if (now - last_rssi_draw_ms >= 500) {
@@ -1303,7 +1433,7 @@ void Application::loop()
 
 #if RX_RAM_BUFFERED_PLAYBACK_MODE
         size_t captured = 0;
-        while (captured < rx_buffered_samples && !ptt_button_pressed()) {
+        while (captured < rx_buffered_samples && !ptt_active()) {
             const size_t n = (rx_buffered_samples - captured > play_chunk_bytes)
                 ? play_chunk_bytes
                 : (rx_buffered_samples - captured);
@@ -1326,14 +1456,14 @@ void Application::loop()
             vTaskDelay(pdMS_TO_TICKS(1));
         }
 
-        if (!ptt_button_pressed() && captured > 0) {
+        if (!ptt_active() && captured > 0) {
             if (!spk_active) {
                 M5.Speaker.begin();
                 M5.Speaker.setVolume(m_speaker_volume);
                 spk_active = true;
             }
             size_t ofs = 0;
-            while (ofs < captured && !ptt_button_pressed()) {
+            while (ofs < captured && !ptt_active()) {
                 const size_t n = (captured - ofs > play_chunk_bytes)
                     ? play_chunk_bytes
                     : (captured - ofs);
@@ -1349,7 +1479,7 @@ void Application::loop()
             }
         }
 #else
-        while (!ptt_button_pressed()) {
+        while (!ptt_active()) {
             if (enable_rx_overlay) {
                 uint32_t now = millis();
                 if (now - last_rssi_draw_ms >= 500) {  // lower UI refresh load

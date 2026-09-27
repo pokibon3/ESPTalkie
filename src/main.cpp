@@ -273,33 +273,67 @@ uint8_t current_speaker_gain()
 }
 
 #if TALKIE_TARGET_M5PAPERCOLOR
+// Debounced raw GPIO button. Edge flags are valid for one loop iteration.
+struct PaperButton {
+    int pin;
+    bool stable = false;
+    bool last_raw = false;
+    uint32_t raw_changed_ms = 0;
+    bool pressed_edge = false;
+    bool released_edge = false;
+
+    explicit PaperButton(int p) : pin(p) {}
+
+    void update(uint32_t now)
+    {
+        constexpr uint32_t kDebounceMs = 20;
+        pressed_edge = false;
+        released_edge = false;
+        const bool raw = digitalRead(pin) == LOW;
+        if (raw != last_raw) {
+            last_raw = raw;
+            raw_changed_ms = now;
+        }
+        if (raw != stable && now - raw_changed_ms >= kDebounceMs) {
+            stable = raw;
+            pressed_edge = stable;
+            released_edge = !stable;
+        }
+    }
+};
+
 void papercolor_loop()
 {
-    // A short debounce is enough because two separate buttons must be held.
-    // Keeping this small also makes the chord practical on the recessed keys.
+    // Buttons are sampled here on core 1 while the E-Ink page is rendered by
+    // a separate task on core 0, so input stays live during slow refreshes.
+    // Values change immediately; the page is redrawn once input has settled.
     constexpr uint32_t kChordHoldMs = 100;
-    constexpr uint32_t kSettingsCommitDelayMs = 2000;
+    constexpr uint32_t kSettingsCommitDelayMs = 1000;
+    static PaperButton btn_a(kPaperButtonAPin);  // left-upper: value +
+    static PaperButton btn_b(kPaperButtonBPin);  // left-middle: value -
+    static PaperButton btn_c(kPaperButtonCPin);  // top: PTT / item select
     static bool chord_tracking = false;
     static bool chord_triggered = false;
     static uint32_t chord_started_ms = 0;
+    static bool a_consumed = false;
+    static bool b_consumed = false;
+    static uint8_t selected_item = static_cast<uint8_t>(PaperColorSettingItem::Channel);
     static bool settings_dirty = false;
+    static bool prefs_dirty = false;
     static uint32_t settings_changed_ms = 0;
 
     papercolor_ui_service();
 
-    // Use the physical labels from the Paper Color pin map. M5Unified 0.2.15
-    // exposes GPIO9 as BtnA and GPIO10 as BtnB, reversing physical A/B.
-    const bool a_pressed = digitalRead(kPaperButtonAPin) == LOW;
-    const bool b_pressed = digitalRead(kPaperButtonBPin) == LOW;
-    const bool c_pressed = digitalRead(kPaperButtonCPin) == LOW;
+    const uint32_t now = millis();
+    btn_a.update(now);
+    btn_b.update(now);
+    btn_c.update(now);
 
-    // Log each electrical transition so the physical button mapping can be
-    // verified on the connected unit without refreshing the E-Ink panel.
-    static uint8_t last_button_bits = 0xFF;
     const uint8_t button_bits =
-        (a_pressed ? 1U : 0U) |
-        ((b_pressed ? 1U : 0U) << 1) |
-        ((c_pressed ? 1U : 0U) << 2);
+        (btn_a.stable ? 1U : 0U) |
+        ((btn_b.stable ? 1U : 0U) << 1) |
+        ((btn_c.stable ? 1U : 0U) << 2);
+    static uint8_t last_button_bits = 0xFF;
     if (button_bits != last_button_bits) {
         Serial.printf("PaperColor buttons: A=%u B=%u C=%u (GPIO10/9/1)\n",
                       button_bits & 1U,
@@ -307,76 +341,97 @@ void papercolor_loop()
                       (button_bits >> 2) & 1U);
         last_button_bits = button_bits;
     }
-    if (a_pressed && b_pressed) {
+
+    if (btn_a.pressed_edge) a_consumed = false;
+    if (btn_b.pressed_edge) b_consumed = false;
+
+    // A+B chord toggles badge / settings page.
+    if (btn_a.stable && btn_b.stable) {
+        a_consumed = true;
+        b_consumed = true;
         if (!chord_tracking) {
             chord_tracking = true;
             chord_triggered = false;
-            chord_started_ms = millis();
+            chord_started_ms = now;
         }
-        if (!chord_triggered && millis() - chord_started_ms >= kChordHoldMs) {
+        if (!chord_triggered && now - chord_started_ms >= kChordHoldMs) {
             Serial.println("PaperColor: A+B chord accepted; toggling page");
+            chord_triggered = true;
             papercolor_ui_update_settings(channel, volume_level, tx_pitch_mode, application->getRSSI());
             if (papercolor_ui_settings_visible()) {
                 papercolor_ui_show_badge();
             } else {
+                selected_item = static_cast<uint8_t>(PaperColorSettingItem::Channel);
+                papercolor_ui_set_selected_item(PaperColorSettingItem::Channel);
                 papercolor_ui_show_settings();
             }
-            chord_triggered = true;
             settings_dirty = false;
         }
-        vTaskDelay(pdMS_TO_TICKS(5));
-        return;
-    }
-    if (chord_tracking) {
-        if (!a_pressed && !b_pressed) {
-            chord_tracking = false;
-            chord_triggered = false;
-        }
-        vTaskDelay(pdMS_TO_TICKS(5));
-        return;
+    } else if (chord_tracking && !btn_a.stable && !btn_b.stable) {
+        chord_tracking = false;
+        chord_triggered = false;
     }
 
+    const bool settings_visible = papercolor_ui_settings_visible();
     bool changed = false;
-    if (!papercolor_ui_settings_visible()) {
-        vTaskDelay(pdMS_TO_TICKS(5));
-        return;
-    }
-    // Physical B / left-middle (GPIO9) is reported as BtnA.
-    if (M5.BtnA.wasHold()) {
-        channel = wrapped_step(channel, 1, 13, -1);
-        application->setChannel(static_cast<uint16_t>(channel));
-        prefs.putInt("channel", channel);
-        changed = true;
-    } else if (M5.BtnA.wasClicked()) {
-        channel = wrapped_step(channel, 1, 13, +1);
-        application->setChannel(static_cast<uint16_t>(channel));
-        prefs.putInt("channel", channel);
-        changed = true;
-    // Physical A / left-upper (GPIO10) is reported as BtnB.
-    } else if (M5.BtnB.wasHold()) {
-        tx_pitch_mode = static_cast<uint8_t>(wrapped_step(
-            static_cast<int>(tx_pitch_mode),
-            static_cast<int>(Application::kTxPitchModeM1),
-            static_cast<int>(Application::kTxPitchModeM3),
-            +1));
-        application->setTxPitchMode(tx_pitch_mode);
-        prefs.putInt("txmode", tx_pitch_mode);
-        changed = true;
-    } else if (M5.BtnB.wasClicked()) {
-        volume_level = wrapped_step(volume_level, 1, 5, +1);
-        application->setSpeakerVolume(current_speaker_gain());
-        prefs.putInt("volume", volume_level);
-        changed = true;
+
+    if (settings_visible) {
+        // Top button: CHANNEL -> VOLUME -> VOICE -> CHANNEL.
+        if (btn_c.pressed_edge) {
+            selected_item = static_cast<uint8_t>((selected_item + 1) %
+                static_cast<uint8_t>(PaperColorSettingItem::Count));
+            papercolor_ui_set_selected_item(static_cast<PaperColorSettingItem>(selected_item));
+            changed = true;
+        }
+
+        // Left-upper = +1, left-middle = -1 (acted on release, unless part of the chord).
+        int delta = 0;
+        if (btn_a.released_edge && !a_consumed) delta = +1;
+        if (btn_b.released_edge && !b_consumed) delta = -1;
+        if (delta != 0) {
+            switch (static_cast<PaperColorSettingItem>(selected_item)) {
+                case PaperColorSettingItem::Channel:
+                    channel = wrapped_step(channel, 1, 13, delta);
+                    application->setChannel(static_cast<uint16_t>(channel));
+                    break;
+                case PaperColorSettingItem::Volume:
+                    volume_level = wrapped_step(volume_level, 1, 5, delta);
+                    application->setSpeakerVolume(current_speaker_gain());
+                    break;
+                case PaperColorSettingItem::Voice:
+                default:
+                    tx_pitch_mode = static_cast<uint8_t>(wrapped_step(
+                        static_cast<int>(tx_pitch_mode),
+                        static_cast<int>(Application::kTxPitchModeM1),
+                        static_cast<int>(Application::kTxPitchModeM3),
+                        delta));
+                    application->setTxPitchMode(tx_pitch_mode);
+                    break;
+            }
+            prefs_dirty = true;
+            changed = true;
+        }
     }
 
     if (changed) {
         papercolor_ui_update_settings(channel, volume_level, tx_pitch_mode, application->getRSSI());
         settings_dirty = true;
-        settings_changed_ms = millis();
+        settings_changed_ms = now;
     }
-    if (settings_dirty && papercolor_ui_settings_visible() &&
-        millis() - settings_changed_ms >= kSettingsCommitDelayMs) {
-        papercolor_ui_show_settings();
+
+    // Commit after input settles: persist to NVS and request one redraw.
+    // If a refresh is already running, the display task picks up the latest
+    // state right after it finishes.
+    if ((settings_dirty || prefs_dirty) && now - settings_changed_ms >= kSettingsCommitDelayMs) {
+        if (prefs_dirty) {
+            prefs.putInt("channel", channel);
+            prefs.putInt("volume", volume_level);
+            prefs.putInt("txmode", tx_pitch_mode);
+            prefs_dirty = false;
+        }
+        if (settings_dirty && papercolor_ui_settings_visible()) {
+            papercolor_ui_show_settings();
+        }
         settings_dirty = false;
     }
 

@@ -6,10 +6,67 @@
 
 #include <Arduino.h>
 #include <M5Unified.h>
+#include <esp32-hal-rmt.h>
 
 namespace {
 
 constexpr uint8_t kLedBrightness = 48;
+// Two WS2812-type LEDs on GPIO21 (power via M5PM1 LDO, enabled by M5.Power).
+// M5Unified 0.2.15's LED driver only implements the IDF5 RMT API, so on
+// Arduino-ESP32 2.x (IDF4.4) M5.Led.begin() always fails. Drive it directly.
+constexpr int kLedPin = 21;
+constexpr int kLedCount = 2;
+rmt_obj_t *s_led_rmt = nullptr;
+volatile int s_battery_level = -1;  // cached; read only from the main loop (I2C)
+
+bool led_begin()
+{
+    s_led_rmt = rmtInit(kLedPin, RMT_TX_MODE, RMT_MEM_64);
+    if (!s_led_rmt) {
+        return false;
+    }
+    rmtSetTick(s_led_rmt, 100);  // 100 ns per tick
+    return true;
+}
+
+// LED index of each lamp in the WS2812 chain (swap if left/right are reversed).
+constexpr int kPowerLedIndex = 0;  // left: power lamp
+constexpr int kRadioLedIndex = 1;  // right: TX/RX lamp
+constexpr int kLowBatteryPercent = 20;
+constexpr uint32_t kBatteryPollMs = 5000;
+constexpr uint32_t kBlinkHalfPeriodMs = 500;
+
+struct LedColor {
+    uint8_t r, g, b;
+    bool operator==(const LedColor &o) const { return r == o.r && g == o.g && b == o.b; }
+};
+
+void led_write(const LedColor (&colors)[kLedCount])
+{
+    if (!s_led_rmt) {
+        return;
+    }
+    static rmt_data_t data[kLedCount * 24];
+    int i = 0;
+    for (int led = 0; led < kLedCount; ++led) {
+        const uint8_t grb[3] = {
+            static_cast<uint8_t>((colors[led].g * kLedBrightness) / 255),
+            static_cast<uint8_t>((colors[led].r * kLedBrightness) / 255),
+            static_cast<uint8_t>((colors[led].b * kLedBrightness) / 255),
+        };
+        for (int c = 0; c < 3; ++c) {
+            for (int bit = 7; bit >= 0; --bit) {
+                const bool one = (grb[c] >> bit) & 1U;
+                data[i].level0 = 1;
+                data[i].duration0 = one ? 8 : 4;
+                data[i].level1 = 0;
+                data[i].duration1 = one ? 4 : 8;
+                ++i;
+            }
+        }
+    }
+    rmtWriteBlocking(s_led_rmt, data, kLedCount * 24);
+}
 
 extern "C" {
 extern const uint8_t badge_image_start[] asm("_binary_assets_pokibon_transfer_png_start");
@@ -22,6 +79,7 @@ struct UiState {
     uint8_t tx_pitch_mode = 1;
     int16_t rssi = -127;
     bool settings_visible = false;
+    uint8_t selected_item = 0;
     uint32_t revision = 0;
 };
 
@@ -30,7 +88,8 @@ portMUX_TYPE s_ui_mux = portMUX_INITIALIZER_UNLOCKED;
 TaskHandle_t s_display_task = nullptr;
 bool s_led_ready = false;
 volatile PaperColorRadioState s_requested_led_state = PaperColorRadioState::Idle;
-PaperColorRadioState s_applied_led_state = PaperColorRadioState::Error;
+constexpr int kPttPin = 1;
+volatile bool s_ptt_inhibit = false;
 
 UiState snapshot_ui()
 {
@@ -66,9 +125,36 @@ void draw_badge(M5Canvas &canvas)
     }
 }
 
+void draw_item_frame(M5Canvas &canvas, int x, int y, int w, int h, bool selected, uint16_t color)
+{
+    if (selected) {
+        for (int i = 0; i < 5; ++i) {
+            canvas.drawRect(x + i, y + i, w - 2 * i, h - 2 * i, TFT_RED);
+        }
+    } else {
+        canvas.drawRect(x, y, w, h, color);
+    }
+}
+
+void draw_item_label(M5Canvas &canvas, const char *text, int cx, int cy, int bar_w, bool selected)
+{
+    canvas.setFont(&fonts::FreeSansBold12pt7b);
+    if (selected) {
+        canvas.fillRect(cx - bar_w / 2, cy - 16, bar_w, 32, TFT_RED);
+        canvas.setTextColor(TFT_WHITE, TFT_RED);
+    } else {
+        canvas.setTextColor(TFT_BLACK, TFT_WHITE);
+    }
+    canvas.drawString(text, cx, cy);
+}
+
 void draw_settings(M5Canvas &canvas, const UiState &state)
 {
     const int w = canvas.width();
+    const auto item = static_cast<PaperColorSettingItem>(state.selected_item);
+    const bool sel_channel = item == PaperColorSettingItem::Channel;
+    const bool sel_volume = item == PaperColorSettingItem::Volume;
+    const bool sel_voice = item == PaperColorSettingItem::Voice;
     canvas.fillSprite(TFT_WHITE);
 
     canvas.fillRect(0, 0, w, 68, TFT_RED);
@@ -77,9 +163,8 @@ void draw_settings(M5Canvas &canvas, const UiState &state)
     canvas.setFont(&fonts::FreeSansBold18pt7b);
     canvas.drawString("ESPTALKIE", w / 2, 34);
 
-    canvas.setTextColor(TFT_BLACK, TFT_WHITE);
-    canvas.setFont(&fonts::FreeSansBold12pt7b);
-    canvas.drawString("CHANNEL", w / 2, 104);
+    draw_item_frame(canvas, 12, 78, w - 24, 196, sel_channel, TFT_BLACK);
+    draw_item_label(canvas, "CHANNEL", w / 2, 104, 200, sel_channel);
 
     char text[48];
     snprintf(text, sizeof(text), "%02d", state.channel);
@@ -95,12 +180,10 @@ void draw_settings(M5Canvas &canvas, const UiState &state)
     canvas.setFont(&fonts::FreeSansBold12pt7b);
     canvas.drawString(text, w / 2, 250);
 
-    canvas.drawRect(20, 286, 172, 112, TFT_BLUE);
-    canvas.drawRect(208, 286, 172, 112, TFT_GREEN);
-    canvas.setTextColor(TFT_BLACK, TFT_WHITE);
-    canvas.setFont(&fonts::FreeSansBold12pt7b);
-    canvas.drawString("VOLUME", 106, 315);
-    canvas.drawString("VOICE", 294, 315);
+    draw_item_frame(canvas, 20, 286, 172, 112, sel_volume, TFT_BLUE);
+    draw_item_frame(canvas, 208, 286, 172, 112, sel_voice, TFT_GREEN);
+    draw_item_label(canvas, "VOLUME", 106, 315, 140, sel_volume);
+    draw_item_label(canvas, "VOICE", 294, 315, 140, sel_voice);
     snprintf(text, sizeof(text), "%d / 5", state.volume_level);
     canvas.setTextColor(TFT_BLUE, TFT_WHITE);
     canvas.setFont(&fonts::FreeSansBold18pt7b);
@@ -119,7 +202,7 @@ void draw_settings(M5Canvas &canvas, const UiState &state)
         canvas.drawString(text, w / 2, 450);
     }
 
-    const int battery = M5.Power.getBatteryLevel();
+    const int battery = s_battery_level;
     if (battery >= 0) {
         snprintf(text, sizeof(text), "BATTERY %d%%", battery);
         canvas.drawString(text, w / 2, 490);
@@ -128,8 +211,8 @@ void draw_settings(M5Canvas &canvas, const UiState &state)
     canvas.fillRect(0, 516, w, 84, TFT_YELLOW);
     canvas.setFont(&fonts::Font2);
     canvas.setTextColor(TFT_BLACK, TFT_YELLOW);
-    canvas.drawString("LEFT-UP: VOL+ / Hold: MODE", w / 2, 531);
-    canvas.drawString("LEFT-MID: CH+ / Hold: CH-", w / 2, 557);
+    canvas.drawString("TOP: SELECT  CH / VOL / VOICE", w / 2, 531);
+    canvas.drawString("LEFT-UP: +1   LEFT-MID: -1", w / 2, 557);
     canvas.drawString("A+B: BADGE / SETTINGS", w / 2, 583);
 }
 
@@ -172,13 +255,9 @@ void papercolor_ui_begin(int channel, int volume_level, uint8_t tx_pitch_mode)
     s_ui.revision = 1;
     taskEXIT_CRITICAL(&s_ui_mux);
 
-    M5.Led.setAutoDisplay(false);
-    s_led_ready = M5.Led.begin();
-    if (s_led_ready) {
-        M5.Led.setBrightness(kLedBrightness);
-        M5.Led.setAllColor(0, 0, 0);
-        M5.Led.display();
-    } else {
+    s_led_ready = led_begin();
+    s_battery_level = M5.Power.getBatteryLevel();
+    if (!s_led_ready) {
         Serial.println("PaperColor: RGB LED init failed");
     }
 
@@ -195,27 +274,65 @@ void papercolor_ui_begin(int channel, int volume_level, uint8_t tx_pitch_mode)
 
 void papercolor_ui_service()
 {
-    if (!s_led_ready || s_requested_led_state == s_applied_led_state) {
+    static uint32_t last_battery_poll_ms = 0;
+    static bool written = false;
+    static LedColor last[kLedCount];
+
+    const uint32_t now = millis();
+    if (now - last_battery_poll_ms >= kBatteryPollMs) {
+        last_battery_poll_ms = now;
+        s_battery_level = M5.Power.getBatteryLevel();
+    }
+    if (!s_led_ready) {
         return;
     }
-    const PaperColorRadioState requested = s_requested_led_state;
-    switch (requested) {
+
+    LedColor colors[kLedCount] = {};
+
+    // Left: power lamp. Solid green; blinks at 1 Hz when battery <= 20 %.
+    const int battery = s_battery_level;
+    const bool low_battery = battery >= 0 && battery <= kLowBatteryPercent;
+    const bool power_on = !low_battery || ((now / kBlinkHalfPeriodMs) & 1U) == 0;
+    if (power_on) {
+        colors[kPowerLedIndex] = { 0, 96, 0 };
+    }
+
+    // Right: radio lamp. Blue = RX, red = TX, orange = error, off = idle.
+    switch (s_requested_led_state) {
         case PaperColorRadioState::Receiving:
-            M5.Led.setAllColor(0, 0, 255);
+            colors[kRadioLedIndex] = { 0, 0, 255 };
             break;
         case PaperColorRadioState::Transmitting:
-            M5.Led.setAllColor(255, 0, 0);
+            colors[kRadioLedIndex] = { 255, 0, 0 };
+            break;
+        case PaperColorRadioState::TransmittingContinuous:
+            // Blink red so continuous TX is distinguishable from PTT hold.
+            if (((now / kBlinkHalfPeriodMs) & 1U) == 0) {
+                colors[kRadioLedIndex] = { 255, 0, 0 };
+            }
             break;
         case PaperColorRadioState::Error:
-            M5.Led.setAllColor(255, 48, 0);
+            colors[kRadioLedIndex] = { 255, 48, 0 };
             break;
         case PaperColorRadioState::Idle:
         default:
-            M5.Led.setAllColor(0, 96, 0);
             break;
     }
-    M5.Led.display();
-    s_applied_led_state = requested;
+
+    bool changed = !written;
+    for (int i = 0; i < kLedCount; ++i) {
+        if (!(colors[i] == last[i])) {
+            changed = true;
+        }
+    }
+    if (!changed) {
+        return;
+    }
+    led_write(colors);
+    for (int i = 0; i < kLedCount; ++i) {
+        last[i] = colors[i];
+    }
+    written = true;
 }
 
 void papercolor_ui_set_radio_state(PaperColorRadioState state)
@@ -257,6 +374,34 @@ bool papercolor_ui_settings_visible()
     return visible;
 }
 
+void papercolor_ui_set_selected_item(PaperColorSettingItem item)
+{
+    if (item >= PaperColorSettingItem::Count) {
+        item = PaperColorSettingItem::Channel;
+    }
+    taskENTER_CRITICAL(&s_ui_mux);
+    s_ui.selected_item = static_cast<uint8_t>(item);
+    taskEXIT_CRITICAL(&s_ui_mux);
+}
+
+bool papercolor_ui_ptt_pressed()
+{
+    const bool raw = digitalRead(kPttPin) == LOW;
+    if (papercolor_ui_settings_visible()) {
+        // Top button is item-select here; keep PTT off until it is released
+        // after returning to the badge page.
+        s_ptt_inhibit = true;
+        return false;
+    }
+    if (s_ptt_inhibit) {
+        if (!raw) {
+            s_ptt_inhibit = false;
+        }
+        return false;
+    }
+    return raw;
+}
+
 #else
 
 void papercolor_ui_begin(int, int, uint8_t) {}
@@ -266,5 +411,7 @@ void papercolor_ui_update_settings(int, int, uint8_t, int16_t) {}
 void papercolor_ui_show_badge() {}
 void papercolor_ui_show_settings() {}
 bool papercolor_ui_settings_visible() { return false; }
+void papercolor_ui_set_selected_item(PaperColorSettingItem) {}
+bool papercolor_ui_ptt_pressed() { return false; }
 
 #endif

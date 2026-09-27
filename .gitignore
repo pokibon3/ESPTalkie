@@ -9,3 +9,6 @@ spiffs_extract/
 # macOS
 .DS_Store
 ._*
+
+# Claude (Cowork) outputs
+Claude outputs/
