@@ -5,3 +5,7 @@
 .vscode/ipch
 spiffs_dump.bin
 spiffs_extract/
+
+# macOS
+.DS_Store
+._*
