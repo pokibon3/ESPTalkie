@@ -7,6 +7,8 @@
 #include <Arduino.h>
 #include <M5Unified.h>
 #include <esp32-hal-rmt.h>
+#include <SD.h>
+#include <SPI.h>
 
 namespace {
 
@@ -68,9 +70,57 @@ void led_write(const LedColor (&colors)[kLedCount])
     rmtWriteBlocking(s_led_rmt, data, kLedCount * 24);
 }
 
+// Built-in fallback badge image (used when the SD card image is unavailable).
 extern "C" {
 extern const uint8_t badge_image_start[] asm("_binary_assets_pokibon_transfer_png_start");
 extern const uint8_t badge_image_end[] asm("_binary_assets_pokibon_transfer_png_end");
+}
+
+// Badge image on the microSD card. The card shares SPI2 with the E-Ink panel
+// (SCK 15 / MISO 14 / MOSI 13, SD CS 47), so it is read only from the display
+// task, once at startup, into PSRAM. Reboot to pick up a new image.
+constexpr int kSdCsPin = 47;
+constexpr int kSdSckPin = 15;
+constexpr int kSdMisoPin = 14;
+constexpr int kSdMosiPin = 13;
+constexpr uint32_t kSdFreqHz = 20000000;
+constexpr const char *kBadgeImagePath = "/pokibon-transfer.png";
+constexpr size_t kBadgeImageMaxBytes = 4 * 1024 * 1024;
+const uint8_t *s_badge_data = nullptr;
+size_t s_badge_size = 0;
+
+void load_badge_image()
+{
+    s_badge_data = badge_image_start;
+    s_badge_size = static_cast<size_t>(badge_image_end - badge_image_start);
+
+    SPI.begin(kSdSckPin, kSdMisoPin, kSdMosiPin, kSdCsPin);
+    if (!SD.begin(kSdCsPin, SPI, kSdFreqHz)) {
+        Serial.println("PaperColor: SD card not found; using built-in badge image");
+        return;
+    }
+    File f = SD.open(kBadgeImagePath, FILE_READ);
+    if (!f) {
+        Serial.printf("PaperColor: %s not found on SD; using built-in badge image\n", kBadgeImagePath);
+        SD.end();
+        return;
+    }
+    const size_t size = f.size();
+    uint8_t *buf = (size > 0 && size <= kBadgeImageMaxBytes)
+        ? static_cast<uint8_t *>(ps_malloc(size)) : nullptr;
+    const size_t read = buf ? f.read(buf, size) : 0;
+    f.close();
+    SD.end();
+    if (!buf || read != size) {
+        Serial.printf("PaperColor: failed to read %s (%u bytes); using built-in badge image\n",
+                      kBadgeImagePath, static_cast<unsigned>(size));
+        free(buf);
+        return;
+    }
+    s_badge_data = buf;
+    s_badge_size = size;
+    Serial.printf("PaperColor: badge image loaded from SD %s (%u bytes)\n",
+                  kBadgeImagePath, static_cast<unsigned>(size));
 }
 
 struct UiState {
@@ -112,11 +162,17 @@ void request_redraw()
 void draw_badge(M5Canvas &canvas)
 {
     canvas.fillSprite(TFT_WHITE);
-    const size_t image_size = static_cast<size_t>(badge_image_end - badge_image_start);
-    const bool ok = canvas.drawPng(
-        badge_image_start, image_size,
-        0, 0, canvas.width(), canvas.height(),
-        0, 0, 1.0F, 1.0F, middle_center);
+    auto draw = [&](const uint8_t *data, size_t size) {
+        return data && canvas.drawPng(data, size,
+            0, 0, canvas.width(), canvas.height(),
+            0, 0, 1.0F, 1.0F, middle_center);
+    };
+    bool ok = draw(s_badge_data, s_badge_size);
+    if (!ok && s_badge_data != badge_image_start) {
+        Serial.println("PaperColor: SD badge image decode failed; using built-in image");
+        canvas.fillSprite(TFT_WHITE);
+        ok = draw(badge_image_start, static_cast<size_t>(badge_image_end - badge_image_start));
+    }
     if (!ok) {
         canvas.setTextDatum(middle_center);
         canvas.setTextColor(TFT_RED, TFT_WHITE);
@@ -216,6 +272,29 @@ void draw_settings(M5Canvas &canvas, const UiState &state)
     canvas.drawString("A+B: BADGE / SETTINGS", w / 2, 583);
 }
 
+// E-Ink panel (ED2208) power handling.
+// After each refresh the panel controller is put into DEEP_SLEEP so it is not
+// left in standby between updates. DEEP_SLEEP can only be exited by a hardware
+// reset, and M5GFX's wakeup() just re-sends the init sequence, so pulse the
+// EPD RST line (GPIO12 on PaperColor) before waking it.
+constexpr int kEpdResetPin = 12;
+
+void epd_sleep()
+{
+    M5.Display.waitDisplay();
+    M5.Display.sleep();
+}
+
+void epd_wakeup()
+{
+    pinMode(kEpdResetPin, OUTPUT);
+    digitalWrite(kEpdResetPin, LOW);
+    vTaskDelay(pdMS_TO_TICKS(20));
+    digitalWrite(kEpdResetPin, HIGH);
+    vTaskDelay(pdMS_TO_TICKS(20));
+    M5.Display.wakeup();  // re-runs the panel init sequence (waits for BUSY)
+}
+
 void display_task(void *)
 {
     M5Canvas canvas(&M5.Display);
@@ -227,7 +306,10 @@ void display_task(void *)
         vTaskDelete(nullptr);
     }
 
+    load_badge_image();
+
     uint32_t rendered_revision = UINT32_MAX;
+    bool panel_sleeping = false;
     while (true) {
         const UiState state = snapshot_ui();
         if (state.revision != rendered_revision) {
@@ -236,7 +318,13 @@ void display_task(void *)
             } else {
                 draw_badge(canvas);
             }
-            canvas.pushSprite(0, 0);
+            if (panel_sleeping) {
+                epd_wakeup();
+                panel_sleeping = false;
+            }
+            canvas.pushSprite(0, 0);  // transfers and refreshes the panel
+            epd_sleep();
+            panel_sleeping = true;
             rendered_revision = state.revision;
         }
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);

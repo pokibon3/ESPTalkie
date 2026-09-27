@@ -84,7 +84,9 @@ M5StickS3、M5AtomS3 + Atomic Echo Base、M5Paper Colorで動作する、WiFi音
     - 値は範囲端で折り返し（CH 1-13、VOL 1-5、VOICE M1-M3）
     - 画面描画中もキー入力を受け付け、最後の操作から1秒後に保存・再描画
 - 設定画面には最終受信時のRSSI（`LAST RX`）も表示します。
-- 名札画像は`assets/pokibon-transfer.png`をファームウェアへ埋め込みます。
+- 名札画像は起動時にmicroSDカードのルートの`pokibon-transfer.png`（400x600推奨のPNG）を読み込みます。
+  - SDカードが無い、ファイルが無い、読み込み/デコードに失敗した場合は、ファームウェアに埋め込んだ`assets/pokibon-transfer.png`を表示します。
+  - 画像を差し替えたら再起動してください。
 
 #### ネックストラップケース（3Dプリント）
 
