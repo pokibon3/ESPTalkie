@@ -15,11 +15,12 @@
 
 #include "DisplaySync.h"
 
-// Screen layout (landscape 1280x720)
+// Screen layout (portrait 720x1280)
 //
-//  Main screen : SD image full screen, overlay at the bottom:
-//                [ level meter ][   PTT   ]              [SETUP]
-//  Setup panel : CHANNEL -/+, VOLUME -/+, VOICE M1/M2/M3,   [CLOSE]
+//  Main screen : SD image full screen, overlay at the bottom centre:
+//                    [ level meter ]
+//                    [     PTT     ]  [SETUP]
+//  Setup panel : CHANNEL -/+, VOLUME -/+, VOICE M1/M2/M3, [CLOSE]
 //                (CLOSE sits where SETUP is, so the same spot toggles)
 
 namespace {
@@ -165,7 +166,7 @@ void draw_ptt(bool pressed)
 
 void draw_setup_button(bool pressed)
 {
-    draw_button(r_setup, s_panel_open ? "CLOSE" : "SETUP", pressed, &fonts::FreeSansBold18pt7b);
+    draw_button(r_setup, s_panel_open ? "CLOSE" : "SETUP", pressed, &fonts::FreeSansBold12pt7b);
 }
 
 void draw_overlay()
@@ -191,7 +192,7 @@ void draw_panel_title()
     char right[40];
     const int32_t batt = M5.Power.getBatteryLevel();
     if (batt >= 0) {
-        snprintf(right, sizeof(right), "%s   BATT %d%%", state, static_cast<int>(batt));
+        snprintf(right, sizeof(right), "%s  %d%%", state, static_cast<int>(batt));
     } else {
         snprintf(right, sizeof(right), "%s", state);
     }
@@ -243,7 +244,7 @@ void draw_panel_info()
         snprintf(line, sizeof(line), "Last RSSI: ---");
     }
     M5.Display.drawString(line, r_info.x, r_info.y);
-    M5.Display.drawString("Slideshow: SD " TAB5_SLIDESHOW_DIR " (JPG/PNG/BMP)", r_info.x, r_info.y + 32);
+    M5.Display.drawString("Images: SD " TAB5_SLIDESHOW_DIR " (JPG/PNG/BMP)", r_info.x, r_info.y + 32);
 }
 
 void draw_panel()
@@ -423,11 +424,8 @@ void tab5_ui_begin(int channel, int volume_level, uint8_t tx_pitch_mode)
     s_mode = tx_pitch_mode;
 
     display_lock();
-    // Tab5 panel is 720x1280 portrait; use landscape.
-    M5.Display.setRotation(1);
-    if (M5.Display.width() < M5.Display.height()) {
-        M5.Display.setRotation(0);
-    }
+    // Tab5 panel is natively 720x1280 portrait; used in portrait.
+    M5.Display.setRotation(0);
     c_bg = M5.Display.color565(10, 18, 36);
     c_panel = M5.Display.color565(28, 34, 44);
     c_accent = TFT_BLUE;
@@ -443,39 +441,36 @@ void tab5_ui_begin(int channel, int volume_level, uint8_t tx_pitch_mode)
     H = M5.Display.height();
     const int pad = 16;
 
-    // ── main screen overlay (bottom) ──
-    const int bar_h = 130;
-    const int bar_y = H - bar_h - pad;
-    const int meter_w = 380;
-    const int ptt_w = 340;
-    const int group_w = meter_w + pad + ptt_w;
-    const int gx = (W - group_w) / 2;
-    r_meter = { gx, bar_y, meter_w, bar_h };
-    r_ptt = { gx + meter_w + pad, bar_y, ptt_w, bar_h };
-    const int setup_w = 170;
-    r_setup = { W - setup_w - pad, bar_y + 20, setup_w, bar_h - 20 };
+    // ── main screen overlay (bottom centre) ──
+    const int ptt_h = 150;
+    const int meter_h = 120;
+    const int ctrl_w = 420;
+    const int cx = (W - ctrl_w) / 2;
+    r_ptt = { cx, H - pad - ptt_h, ctrl_w, ptt_h };
+    r_meter = { cx, r_ptt.y - pad - meter_h, ctrl_w, meter_h };
+    const int setup_x = r_ptt.x + r_ptt.w + 20;
+    r_setup = { setup_x, r_ptt.y + 20, W - pad - setup_x, ptt_h - 20 };
 
     // ── setup panel ──
     r_title = { 0, 0, W, 90 };
-    const int col_x = 80;
     const int btn_w = 140;
     const int row_h = 130;
-    const int val_w = 260;
-    int y = r_title.h + 30;
-    r_ch_down = { col_x, y, btn_w, row_h };
-    r_ch_val = { col_x + btn_w + pad, y, val_w, row_h };
-    r_ch_up = { col_x + btn_w + pad + val_w + pad, y, btn_w, row_h };
-    const int col2_x = r_ch_up.x + btn_w + 80;
-    r_vol_down = { col2_x, y, btn_w, row_h };
-    r_vol_val = { col2_x + btn_w + pad, y, val_w - 60, row_h };
-    r_vol_up = { r_vol_val.x + r_vol_val.w + pad, y, btn_w, row_h };
+    const int val_w = W - 2 * pad - 2 * (btn_w + pad);
+    int y = r_title.h + 40;
+    r_ch_down = { pad, y, btn_w, row_h };
+    r_ch_val = { pad + btn_w + pad, y, val_w, row_h };
+    r_ch_up = { W - pad - btn_w, y, btn_w, row_h };
+    y += row_h + 30;
+    r_vol_down = { pad, y, btn_w, row_h };
+    r_vol_val = { pad + btn_w + pad, y, val_w, row_h };
+    r_vol_up = { W - pad - btn_w, y, btn_w, row_h };
     y += row_h + 70;
-    const int mode_w = 200;
+    const int mode_w = (W - 4 * pad) / 3;
     for (int i = 0; i < 3; ++i) {
-        r_mode[i] = { col_x + i * (mode_w + pad), y, mode_w, 110 };
+        r_mode[i] = { pad + i * (mode_w + pad), y, mode_w, 120 };
     }
-    y += 110 + 40;
-    r_info = { col_x, y, W - col_x - setup_w - 3 * pad, 80 };
+    y += 120 + 40;
+    r_info = { pad, y, W - 2 * pad, 80 };
 
     s_ready = true;
     display_lock();
@@ -632,12 +627,9 @@ void tab5_ui_set_tx_power(int16_t dbm)
 void tab5_ui_message(const char *msg)
 {
     display_lock();
-    if (M5.Display.width() < M5.Display.height()) {
-        M5.Display.setRotation(1);
-    }
     const uint16_t bg = M5.Display.color565(20, 20, 20);
     M5.Display.fillRect(0, 0, M5.Display.width(), 80, bg);
-    M5.Display.setFont(&fonts::FreeSansBold18pt7b);
+    M5.Display.setFont(&fonts::FreeSansBold12pt7b);
     M5.Display.setTextDatum(middle_center);
     M5.Display.setTextColor(TFT_YELLOW, bg);
     M5.Display.drawString(msg, M5.Display.width() / 2, 40);
