@@ -68,6 +68,17 @@ bool tab5_coprocessor_ensure_espnow()
                   (unsigned long)hmaj, (unsigned long)hmin, (unsigned long)hpat,
                   (unsigned long)smaj, (unsigned long)smin, (unsigned long)spat);
 
+    // Factory Tab5 C6 firmware (ESP-Hosted 1.x) has no OTA partitions and is
+    // not protocol-compatible with the 2.x host: it must be flashed over UART
+    // once (assets/c6/wired).
+    if (smaj < 2) {
+        char msg[64];
+        snprintf(msg, sizeof(msg), "C6 fw %lu.%lu.%lu too old: wired flash needed",
+                 (unsigned long)smaj, (unsigned long)smin, (unsigned long)spat);
+        tab5_ui_message(msg);
+        return false;
+    }
+
     Preferences prefs;
     prefs.begin("tab5c6", false);
 
