@@ -10,6 +10,7 @@
 #include "Application.h"
 #include "DisplaySync.h"
 #include "PaperColorUi.h"
+#include "Tab5Ui.h"
 #include "UiLayout.h"
 #include "config.h"
 
@@ -439,6 +440,43 @@ void papercolor_loop()
 }
 #endif
 
+#if TALKIE_TARGET_M5TAB5
+void tab5_loop()
+{
+    const Tab5Action action = tab5_ui_poll();
+    if (action == Tab5Action::None) {
+        vTaskDelay(pdMS_TO_TICKS(5));
+        return;
+    }
+    switch (action) {
+        case Tab5Action::ChannelDown:
+        case Tab5Action::ChannelUp:
+            channel = wrapped_step(channel, 1, 13, action == Tab5Action::ChannelUp ? +1 : -1);
+            application->setChannel(static_cast<uint16_t>(channel));
+            prefs.putInt("channel", channel);
+            break;
+        case Tab5Action::VolumeDown:
+        case Tab5Action::VolumeUp:
+            volume_level = wrapped_step(volume_level, 1, 5, action == Tab5Action::VolumeUp ? +1 : -1);
+            application->setSpeakerVolume(current_speaker_gain());
+            prefs.putInt("volume", volume_level);
+            break;
+        case Tab5Action::Mode1:
+        case Tab5Action::Mode2:
+        case Tab5Action::Mode3:
+            tx_pitch_mode = static_cast<uint8_t>(Application::kTxPitchModeM1 +
+                (static_cast<int>(action) - static_cast<int>(Tab5Action::Mode1)));
+            application->setTxPitchMode(tx_pitch_mode);
+            prefs.putInt("txmode", tx_pitch_mode);
+            break;
+        default:
+            break;
+    }
+    tab5_ui_set_settings(channel, volume_level, tx_pitch_mode);
+    vTaskDelay(pdMS_TO_TICKS(5));
+}
+#endif
+
 }  // namespace
 
 void setup()
@@ -480,7 +518,10 @@ void setup()
         tx_pitch_mode = Application::kTxPitchModeM1;
     }
 
-#if !PTT_LOCAL_PLAYBACK_TEST_MODE && !TALKIE_TARGET_M5PAPERCOLOR
+#if TALKIE_TARGET_M5TAB5
+    // UI first so C6 firmware update progress (Application::begin) is visible.
+    tab5_ui_begin(channel, volume_level, tx_pitch_mode);
+#elif !PTT_LOCAL_PLAYBACK_TEST_MODE && !TALKIE_TARGET_M5PAPERCOLOR
     draw_layout();
 #elif PTT_LOCAL_PLAYBACK_TEST_MODE
     display_lock();
@@ -517,6 +558,10 @@ void loop()
     M5.update();
 #if TALKIE_TARGET_M5PAPERCOLOR
     papercolor_loop();
+    return;
+#endif
+#if TALKIE_TARGET_M5TAB5
+    tab5_loop();
     return;
 #endif
 #if PTT_LOCAL_PLAYBACK_TEST_MODE

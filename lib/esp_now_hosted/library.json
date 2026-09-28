@@ -1,0 +1,5 @@
+{
+    "name": "esp_now_hosted",
+    "description": "esp_now_* over esp-hosted CustomRpc for radio-less ESP32-P4 hosts",
+    "license": "MIT"
+}

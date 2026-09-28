@@ -1,5 +1,4 @@
 #include <freertos/FreeRTOS.h>
-#include <driver/i2s.h>
 #include <driver/gpio.h>
 
 // Build target selection (set from platformio.ini build_flags)
@@ -21,6 +20,12 @@
 #define TALKIE_TARGET_M5PAPERCOLOR 0
 #endif
 
+#if defined(TARGET_M5TAB5)
+#define TALKIE_TARGET_M5TAB5 1
+#else
+#define TALKIE_TARGET_M5TAB5 0
+#endif
+
 // WiFi credentials
 //#define WIFI_SSID 
 //#define WIFI_PSWD 
@@ -35,6 +40,8 @@
 #define MIC_MAGNIFICATION 20
 #elif TALKIE_TARGET_M5STICKS3
 #define MIC_MAGNIFICATION 20
+#elif TALKIE_TARGET_M5TAB5
+#define MIC_MAGNIFICATION 16
 #else
 #define MIC_MAGNIFICATION 20
 #endif
@@ -107,7 +114,11 @@
 #define TX_8BIT_COMPRESSOR_ENABLE 0
 
 // Horizontal shake to change current setting (same effect as BtnB click)
+#if TALKIE_TARGET_M5TAB5
+#define SHAKE_SWITCH_ENABLED     0
+#else
 #define SHAKE_SWITCH_ENABLED     1
+#endif
 #define SHAKE_SENSITIVITY_LOW    1
 #define SHAKE_SENSITIVITY_MID    2
 #define SHAKE_SENSITIVITY_HIGH   3
@@ -131,3 +142,7 @@
 #define SHAKE_Z_THRESHOLD_G      SHAKE_X_THRESHOLD_G
 #define SHAKE_Z_DOMINANCE_G      SHAKE_X_DOMINANCE_G
 #define SHAKE_COOLDOWN_MS        450
+
+// M5Stack Tab5: SD card image slideshow (left pane)
+#define TAB5_SLIDESHOW_DIR         "/images"
+#define TAB5_SLIDESHOW_INTERVAL_MS 10000

@@ -12,6 +12,8 @@
 #include "EspNowTransport.h"
 #include "OutputBuffer.h"
 #include "PaperColorUi.h"
+#include "Tab5Coprocessor.h"
+#include "Tab5Ui.h"
 #include "UiLayout.h"
 #include "config.h"
 
@@ -30,6 +32,9 @@ static bool ptt_button_pressed()
     // Paper Color top button (physical C) is PTT on the badge page only.
     // On the settings page it selects the item to edit.
     return papercolor_ui_ptt_pressed();
+#elif TALKIE_TARGET_M5TAB5
+    // On-screen PTT button (touch), sampled by the UI loop.
+    return tab5_ui_ptt_pressed();
 #else
     return M5.BtnA.isPressed();
 #endif
@@ -868,6 +873,11 @@ void Application::begin()
     Serial.print("My MAC Address is: ");
     Serial.println(WiFi.macAddress());
 
+#if TALKIE_TARGET_M5TAB5
+    // ESP-NOW runs on the C6 co-processor; update its firmware if needed.
+    tab5_coprocessor_ensure_espnow();
+#endif
+
     const char *packet_magic = ESPNOW_PACKET_MAGIC_TEXT;
     if (m_transport->set_header(static_cast<int>(strlen(packet_magic)),
                                 reinterpret_cast<const uint8_t *>(packet_magic)) != 0) {
@@ -936,6 +946,10 @@ void Application::dispRSSI(int16_t rssi)
     (void)rssi;
     return;
 #endif
+#if TALKIE_TARGET_M5TAB5
+    tab5_ui_set_rssi(rssi);
+    return;
+#endif
     display_lock();
     const uint16_t kBarLeftOn = TFT_GREEN;
     const uint16_t kBarRightOn = TFT_RED;
@@ -1000,6 +1014,10 @@ void Application::dispStatus(bool transmitting)
     }
     return;
 #endif
+#if TALKIE_TARGET_M5TAB5
+    tab5_ui_set_status(transmitting, s_continuous_tx);
+    return;
+#endif
     display_lock();
     const uint16_t status_color = transmitting
         ? TFT_RED
@@ -1050,6 +1068,10 @@ void Application::dispTxPower(int16_t dbm)
 {
 #if TALKIE_TARGET_M5PAPERCOLOR
     (void)dbm;
+    return;
+#endif
+#if TALKIE_TARGET_M5TAB5
+    tab5_ui_set_tx_power(dbm);
     return;
 #endif
     display_lock();

@@ -27,6 +27,7 @@ M5StickS3、M5AtomS3 + Atomic Echo Base、M5Paper Colorで動作する、WiFi音
 | `m5stack-sticks3`（デフォルト） | M5StickS3 |
 | `m5stack-atoms3-echo-base` | M5AtomS3 + Atomic Echo Base |
 | `m5stack-papercolor` | M5Paper Color |
+| `m5stack-tab5` | M5Stack Tab5（pioarduino / Arduino 3.x） |
 
 - atomic14氏の [ESP32-walkie-talkie](https://github.com/atomic14/esp32-walkie-talkie) プロジェクトから、`transport` クラスおよび `OutputBuffer` クラスを流用・改造して利用しています。
 
@@ -99,6 +100,16 @@ M5StickS3、M5AtomS3 + Atomic Echo Base、M5Paper Colorで動作する、WiFi音
 - 本体は上から差し込み、左右のラッチで固定します。猫耳のφ5mm穴にストラップを通します。
 - 上面（上ボタン・マイク・LED）は塞がず、側面ボタン・USB-C・Groveポートは開口しています。
 - 背面を下にしてサポートなしで印刷できます。
+
+### M5Stack Tab5（開発中）
+- ESP32-P4は無線を持たないため、ESP-NOWは内蔵ESP32-C6がesp-hosted経由で送受信します。
+  - C6ファーム: ESPHomeの [esp-hosted-firmware](https://github.com/esphome/esp-hosted-firmware) v2.12.13（ESP-NOWオーバーレイ入り、Apache-2.0）を `assets/c6/` に同梱。
+  - 起動時にC6がESP-NOW要求に応答しなければ、同梱ファームをC6へ自動で書き込み、再起動します（初回のみ）。
+  - P4側は `lib/esp_now_hosted` が `esp_now_*` をesp-hostedのCustomRpcへ中継します（送信は応答待ちなし）。
+- 画面（横向き 1280x720）
+  - 左: SDカード `/images` 内の JPG/PNG/BMP をファイル名順にスライドショー（間隔は `config.h` の `TAB5_SLIDESHOW_INTERVAL_MS`）
+  - 右: 送受信状態・電池、CHANNEL −/＋、VOLUME −/＋、M1/M2/M3、RSSI/送信出力、PTTボタン
+- PTTボタンは押している間送信。指がボタン外に出ると解除。ダブルタップで連続送信のON/OFF。
 
 ## バージョン来歴
 - v1.0: 新規作成
