@@ -22,8 +22,11 @@ bool flash_embedded_firmware()
 {
     const size_t total = static_cast<size_t>(c6_fw_end - c6_fw_start);
     Serial.printf("C6: writing embedded firmware (%u bytes)\n", static_cast<unsigned>(total));
+    Serial.printf("C6: hostedIsInitialized=%d wifiActive=%d target=%s\n",
+                  hostedIsInitialized(), hostedIsWiFiActive(), hostedGetSlaveTargetName());
+    const uint32_t t0 = millis();
     if (!hostedBeginUpdate()) {
-        Serial.println("C6: hostedBeginUpdate failed");
+        Serial.printf("C6: hostedBeginUpdate failed (%lu ms)\n", (unsigned long)(millis() - t0));
         return false;
     }
     constexpr size_t kChunk = 1400;
@@ -68,12 +71,19 @@ bool tab5_coprocessor_ensure_espnow()
                   (unsigned long)hmaj, (unsigned long)hmin, (unsigned long)hpat,
                   (unsigned long)smaj, (unsigned long)smin, (unsigned long)spat);
 
-    // Factory Tab5 C6 firmware (ESP-Hosted 1.x) has no OTA partitions and is
-    // not protocol-compatible with the 2.x host: it must be flashed over UART
-    // once (assets/c6/wired).
+    // Factory Tab5 C6 firmware is ESP-Hosted 1.4.1. Try the OTA path once per
+    // boot with verbose logging; if the factory image has no OTA slot,
+    // hostedBeginUpdate() fails and nothing is written.
     if (smaj < 2) {
+        Serial.println("C6: factory firmware detected, trying OTA to 2.12.13");
+        tab5_ui_message("C6 fw 1.x: trying update...");
+        if (flash_embedded_firmware()) {
+            tab5_ui_message("C6 updated. Restarting...");
+            delay(1000);
+            ESP.restart();
+        }
         char msg[64];
-        snprintf(msg, sizeof(msg), "C6 fw %lu.%lu.%lu too old: wired flash needed",
+        snprintf(msg, sizeof(msg), "C6 fw %lu.%lu.%lu: OTA failed, wired flash needed",
                  (unsigned long)smaj, (unsigned long)smin, (unsigned long)spat);
         tab5_ui_message(msg);
         return false;
