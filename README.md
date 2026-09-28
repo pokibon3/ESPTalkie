@@ -109,7 +109,7 @@ M5StickS3、M5AtomS3 + Atomic Echo Base、M5Paper Colorで動作する、WiFi音
 - 画面（縦向き 720x1280）
   - メイン: SDカードの `/images/pokibon.jpeg`（`config.h` の `TAB5_IMAGE_PATH`）を全画面表示。下部中央にPTT、右下にSETUP
   - SETUP: CHANNEL −/＋、VOLUME −/＋、VOICE M1/M2/M3、受信RSSI/送信出力メーター、チャンネルスキャン
-    - スキャン: START でCH1〜13のWi-Fiアクセスポイントを繰り返しスキャンし、各CHの最大RSSIと台数をグラフ表示（最も空いているCHの番号を緑表示、現在のCHは枠付き）
+    - スキャン: START でCH1〜13を繰り返しスキャン。各CHについて、Wi-Fiアクセスポイントの最大RSSIと台数（緑/黄/赤の棒）、ESP-NOWの最大RSSIと受信フレーム数（水色の棒、各CH 0.25秒待ち受け、LR・通常モードとも受信）をグラフ表示。最も空いているCHの番号を緑、現在のCHは枠付き
     - STOP、または CLOSE でSETUPを抜けると、設定中のチャンネル・LRモードに戻る。スキャン中は送信しない
 - PTTボタンは押している間送信。指がボタン外に出ると解除。ダブルタップで連続送信のON/OFF。
 

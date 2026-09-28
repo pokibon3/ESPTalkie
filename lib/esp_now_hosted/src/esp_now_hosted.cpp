@@ -58,6 +58,8 @@ uint8_t s_resp_ret[8];
 uint16_t s_resp_ret_len = 0;
 
 esp_now_recv_cb_t s_recv_cb = nullptr;
+esp_now_hosted_monitor_cb_t s_monitor_cb = nullptr;
+volatile bool s_monitor_suppress = false;
 esp_now_send_cb_t s_send_cb = nullptr;
 
 // Static RX metadata handed to the application callback (called from the
@@ -105,6 +107,13 @@ void on_recv(uint32_t, const uint8_t *data, size_t len, void *)
     const auto *evt = reinterpret_cast<const esp_now_hosted_recv_evt_t *>(data);
     if (len < sizeof(esp_now_hosted_recv_evt_t) + evt->data_len) {
         return;
+    }
+    esp_now_hosted_monitor_cb_t mon = s_monitor_cb;
+    if (mon) {
+        mon(evt->src_addr, evt->rssi, evt->channel, evt->data, evt->data_len);
+        if (s_monitor_suppress) {
+            return;
+        }
     }
     esp_now_recv_cb_t cb = s_recv_cb;
     if (!cb) {
@@ -331,6 +340,12 @@ extern "C" esp_err_t esp_now_set_wake_window(uint16_t)
 }
 
 // ── ESPTalkie helpers ──────────────────────────────────────────────────────
+
+void esp_now_hosted_set_monitor(esp_now_hosted_monitor_cb_t cb, bool suppress_app_rx)
+{
+    s_monitor_suppress = cb ? suppress_app_rx : false;
+    s_monitor_cb = cb;
+}
 
 bool esp_now_hosted_available(uint32_t timeout_ms)
 {

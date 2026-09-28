@@ -12,6 +12,7 @@
 #include <M5Unified.h>
 
 #include "DisplaySync.h"
+#include "esp_now_hosted.h"
 
 // Screen layout (portrait 720x1280)
 //
@@ -75,6 +76,13 @@ volatile bool s_scan_stop = false;
 int8_t s_scan_rssi[kChannels];   // strongest AP per channel (kNoSignal = none)
 uint8_t s_scan_count[kChannels]; // number of APs per channel
 uint32_t s_scan_sweeps = 0;
+// ESP-NOW activity heard while hopping (LR and 11b/g/n)
+int8_t s_now_rssi[kChannels];
+uint16_t s_now_frames[kChannels];
+volatile int8_t s_hop_rssi[kChannels];
+volatile uint16_t s_hop_frames[kChannels];
+volatile int s_hop_ch = 0;
+constexpr uint32_t kHopDwellMs = 250;
 
 // ── Drawing helpers ───────────────────────────────────────────────────────
 
@@ -233,10 +241,13 @@ void draw_meter()
     }
 }
 
-// Channel scan graph: strongest AP RSSI per channel (-100..-30 dBm).
+// Channel scan graph per channel (-100..-30 dBm):
+//   left bar  = strongest Wi-Fi AP (count above)
+//   right bar = strongest ESP-NOW frame heard (frames above)
 void draw_scan()
 {
     const Rect &r = r_scan;
+    const uint16_t c_now = TFT_CYAN;
     M5.Display.fillRoundRect(r.x, r.y, r.w, r.h, 16, c_panel);
     M5.Display.drawRoundRect(r.x, r.y, r.w, r.h, 16, c_accent);
 
@@ -247,15 +258,23 @@ void draw_scan()
     if (s_scan_sweeps == 0) {
         snprintf(head, sizeof(head), s_scan_running ? "CHANNEL SCAN  scanning..." : "CHANNEL SCAN  (press START)");
     } else {
-        snprintf(head, sizeof(head), "CHANNEL SCAN  Wi-Fi APs  #%lu", static_cast<unsigned long>(s_scan_sweeps));
+        snprintf(head, sizeof(head), "CHANNEL SCAN  #%lu", static_cast<unsigned long>(s_scan_sweeps));
     }
     M5.Display.drawString(head, r.x + 16, r.y + 10);
+    // legend
+    M5.Display.setFont(&fonts::FreeSans9pt7b);
+    M5.Display.setTextDatum(top_right);
+    M5.Display.fillRect(r.x + r.w - 250, r.y + 16, 14, 14, TFT_GREEN);
+    M5.Display.setTextColor(c_text, c_panel);
+    M5.Display.drawString("Wi-Fi AP", r.x + r.w - 150, r.y + 14);
+    M5.Display.fillRect(r.x + r.w - 130, r.y + 16, 14, 14, c_now);
+    M5.Display.drawString("ESP-NOW", r.x + r.w - 16, r.y + 14);
 
     constexpr int kMin = -100, kMax = -30;
     const int gx = r.x + 60;
     const int gw = r.w - 60 - 16;
-    const int gy = r.y + 50;
-    const int gh = r.h - 50 - 60;
+    const int gy = r.y + 70;
+    const int gh = r.h - 70 - 60;
     const int base = gy + gh;
 
     // dBm grid
@@ -270,47 +289,64 @@ void draw_scan()
         M5.Display.drawString(t, gx - 6, y);
     }
 
-    // Quietest channel(s): lowest strongest-AP RSSI.
+    // Quietest channel: lowest of (strongest AP, strongest ESP-NOW).
+    auto level = [](int ch) {
+        return s_scan_rssi[ch] > s_now_rssi[ch] ? s_scan_rssi[ch] : s_now_rssi[ch];
+    };
     int best = 0;
     if (s_scan_sweeps) {
         for (int ch = 1; ch < kChannels; ++ch) {
-            if (s_scan_rssi[ch] < s_scan_rssi[best]) best = ch;
+            if (level(ch) < level(best)) best = ch;
         }
     }
 
+    auto bar_h = [&](int v) {
+        const int clamped = v < kMin ? kMin : (v > kMax ? kMax : v);
+        return (clamped - kMin) * gh / (kMax - kMin);
+    };
     const int slot = gw / kChannels;
-    const int bw = slot - 10;
+    const int bw = (slot - 8) / 2;
     for (int ch = 0; ch < kChannels; ++ch) {
-        const int x = gx + ch * slot + 5;
-        const int16_t v = s_scan_rssi[ch];
-        if (s_scan_sweeps && v > kNoSignal) {
-            const int clamped = v < kMin ? kMin : (v > kMax ? kMax : v);
-            const int h = (clamped - kMin) * gh / (kMax - kMin);
-            uint16_t color = TFT_GREEN;
-            if (v >= -60) color = TFT_RED;
-            else if (v >= -75) color = TFT_YELLOW;
-            M5.Display.fillRect(x, base - h, bw, h, color);
-        }
-        // AP count above the axis
-        if (s_scan_sweeps && s_scan_count[ch]) {
-            char c[4];
-            snprintf(c, sizeof(c), "%u", s_scan_count[ch]);
-            M5.Display.setFont(&fonts::Font2);
+        const int x = gx + ch * slot + 4;
+        if (s_scan_sweeps) {
+            const int16_t ap = s_scan_rssi[ch];
+            if (ap > kNoSignal) {
+                const int h = bar_h(ap);
+                uint16_t color = TFT_GREEN;
+                if (ap >= -60) color = TFT_RED;
+                else if (ap >= -75) color = TFT_YELLOW;
+                M5.Display.fillRect(x, base - h, bw, h, color);
+            }
+            const int16_t now = s_now_rssi[ch];
+            if (now > kNoSignal) {
+                const int h = bar_h(now);
+                M5.Display.fillRect(x + bw, base - h, bw, h, c_now);
+            }
+            M5.Display.setFont(&fonts::Font0);
             M5.Display.setTextDatum(bottom_center);
-            M5.Display.setTextColor(c_text, c_panel);
-            M5.Display.drawString(c, x + bw / 2, gy - 2 + 16);
+            char c[6];
+            if (s_scan_count[ch]) {
+                snprintf(c, sizeof(c), "%u", s_scan_count[ch]);
+                M5.Display.setTextColor(TFT_GREEN, c_panel);
+                M5.Display.drawString(c, x + bw / 2, gy - 4);
+            }
+            if (s_now_frames[ch]) {
+                snprintf(c, sizeof(c), "%u", s_now_frames[ch] > 999 ? 999 : s_now_frames[ch]);
+                M5.Display.setTextColor(c_now, c_panel);
+                M5.Display.drawString(c, x + bw + bw / 2, gy - 14);
+            }
         }
         // channel label: current = boxed, quietest = green
         const bool current = (ch + 1 == s_channel);
         const bool quiet = s_scan_sweeps && ch == best;
         const uint16_t lab_bg = current ? c_btn_pressed : c_panel;
-        M5.Display.fillRoundRect(x - 2, base + 8, bw + 4, 36, 6, lab_bg);
+        M5.Display.fillRoundRect(x - 2, base + 8, 2 * bw + 4, 36, 6, lab_bg);
         M5.Display.setFont(&fonts::FreeSansBold12pt7b);
         M5.Display.setTextDatum(middle_center);
         M5.Display.setTextColor(quiet ? TFT_GREEN : c_text, lab_bg);
         char l[4];
         snprintf(l, sizeof(l), "%d", ch + 1);
-        M5.Display.drawString(l, x + bw / 2, base + 26);
+        M5.Display.drawString(l, x + bw, base + 26);
     }
 }
 
@@ -342,10 +378,23 @@ void flash_button(const Rect &r, const char *label)
 
 // ── Channel scan task ─────────────────────────────────────────────────────
 
+// Runs in the esp-hosted RX thread for every ESP-NOW frame during a scan.
+void scan_monitor(const uint8_t *, int8_t rssi, uint8_t channel, const uint8_t *, int)
+{
+    const int ch = s_hop_ch;
+    if (ch < 1 || ch > kChannels) return;
+    if (channel && channel != ch) return;  // straggler from the previous channel
+    if (rssi > s_hop_rssi[ch - 1]) s_hop_rssi[ch - 1] = rssi;
+    if (s_hop_frames[ch - 1] < 65535) s_hop_frames[ch - 1]++;
+}
+
 void scan_task(void *)
 {
-    // Normal Wi-Fi scan needs 11b/g/n; ESPTalkie runs LR-only.
+    // Receive both LR and normal (11b/g/n) frames; the Wi-Fi scan also needs
+    // 11b/g/n. ESPTalkie itself runs LR-only.
     esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N | WIFI_PROTOCOL_LR);
+    // Count every ESP-NOW frame; keep scan traffic out of the audio path.
+    esp_now_hosted_set_monitor(scan_monitor, true);
     while (!s_scan_stop) {
         const int n = WiFi.scanNetworks(false, true, false, 120);
         int8_t rssi[kChannels];
@@ -367,10 +416,28 @@ void scan_task(void *)
             vTaskDelay(pdMS_TO_TICKS(500));
             continue;
         }
+        // Listen for ESP-NOW on each channel (mixed LR + 11b/g/n receive).
+        for (int ch = 1; ch <= kChannels && !s_scan_stop; ++ch) {
+            s_hop_rssi[ch - 1] = kNoSignal;
+            s_hop_frames[ch - 1] = 0;
+            s_hop_ch = ch;
+            esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE);
+            vTaskDelay(pdMS_TO_TICKS(kHopDwellMs));
+        }
+        s_hop_ch = 0;
+        if (s_scan_stop) {
+            break;
+        }
         memcpy(s_scan_rssi, rssi, sizeof(rssi));
         memcpy(s_scan_count, count, sizeof(count));
+        for (int i = 0; i < kChannels; ++i) {
+            s_now_rssi[i] = s_hop_rssi[i];
+            s_now_frames[i] = s_hop_frames[i];
+        }
         s_scan_sweeps++;
-        Serial.printf("Tab5 scan #%lu: %d APs\n", static_cast<unsigned long>(s_scan_sweeps), n);
+        Serial.printf("Tab5 scan #%lu: %d APs, ESP-NOW frames:", static_cast<unsigned long>(s_scan_sweeps), n);
+        for (int i = 0; i < kChannels; ++i) Serial.printf(" %u", s_now_frames[i]);
+        Serial.println();
         if (s_panel_open) {
             display_lock();
             draw_scan();
@@ -379,6 +446,8 @@ void scan_task(void *)
         vTaskDelay(pdMS_TO_TICKS(200));
     }
 
+    esp_now_hosted_set_monitor(nullptr, false);
+    s_hop_ch = 0;
 #ifdef ESPNOW_LONG_RANGE
     esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_LR);
 #endif
@@ -538,6 +607,8 @@ void tab5_ui_begin(int channel, int volume_level, uint8_t tx_pitch_mode, void (*
     for (int i = 0; i < kChannels; ++i) {
         s_scan_rssi[i] = kNoSignal;
         s_scan_count[i] = 0;
+        s_now_rssi[i] = kNoSignal;
+        s_now_frames[i] = 0;
     }
 
     display_lock();
