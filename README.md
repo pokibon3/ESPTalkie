@@ -1,5 +1,5 @@
 # ESP32Talkie：WiFi音声トランシーバ
-M5StickS3、M5AtomS3 + Atomic Echo Base、M5Paper Colorで動作する、WiFi音声トランシーバのサンプルコードです。
+M5StickS3、M5AtomS3 + Atomic Echo Base、M5Paper Color、M5Stack Tab5で動作する、WiFi音声トランシーバのサンプルコードです。
 2.4GHz WiFiで音声通信ができるライセンスフリーのトランシーバで、Espressif社のESP-NOWプロトコルを使用します。
 
 ![ESP32Talkie](ESP32Talkie.JPG)
@@ -12,7 +12,7 @@ M5StickS3、M5AtomS3 + Atomic Echo Base、M5Paper Colorで動作する、WiFi音
 - 音声出力：約1.0W
 - プロトコル：ESP-NOW Long Range Mode（Espressif）
 - 通信距離：最大1km（見通し距離）
-- 制御マイコン：M5StickS3 / M5AtomS3 + Atomic Echo Base / M5Paper Color（いずれもESP32-S3）
+- 制御マイコン：M5StickS3 / M5AtomS3 + Atomic Echo Base / M5Paper Color（いずれもESP32-S3）、M5Stack Tab5（ESP32-P4 + 無線用ESP32-C6）
 - 電源：リチウムポリマー電池 3.7V（M5StickS3: 250mAh、M5Paper Color: 1250mAh）
 - 消費電力：最大約１W（送信時）
 - その他：ライセンスフリー
@@ -27,6 +27,7 @@ M5StickS3、M5AtomS3 + Atomic Echo Base、M5Paper Colorで動作する、WiFi音
 | `m5stack-sticks3`（デフォルト） | M5StickS3 |
 | `m5stack-atoms3-echo-base` | M5AtomS3 + Atomic Echo Base |
 | `m5stack-papercolor` | M5Paper Color |
+| `m5stack-tab5` | M5Stack Tab5（縦持ち、pioarduino / Arduino 3.x） |
 
 - atomic14氏の [ESP32-walkie-talkie](https://github.com/atomic14/esp32-walkie-talkie) プロジェクトから、`transport` クラスおよび `OutputBuffer` クラスを流用・改造して利用しています。
 
@@ -100,6 +101,29 @@ M5StickS3、M5AtomS3 + Atomic Echo Base、M5Paper Colorで動作する、WiFi音
 - 上面（上ボタン・マイク・LED）は塞がず、側面ボタン・USB-C・Groveポートは開口しています。
 - 背面を下にしてサポートなしで印刷できます。
 
+### M5Stack Tab5
+- 縦持ち（720x1280）で使用します。
+- メイン画面
+  - SDカードの `/images/pokibon.jpeg`（または `.jpg`、`config.h` の `TAB5_IMAGE_PATH`）を全画面表示
+  - 下部中央: PTTボタン（設定中のチャンネルを表示）、右下: SETUPボタン
+  - PTTは押している間送信。指がボタン外に出ると解除。ダブルタップで連続送信のON/OFF。送信中はボタンが TX / CONT TX 表示
+- SETUP画面（SETUPで開き、同じ位置の CLOSE で戻る）
+  - CHANNEL −/＋、VOLUME −/＋、VOICE M1/M2/M3
+  - レベルメーター（受信RSSI／送信出力）。受信が止まって1秒で「---」に戻る
+  - チャンネルスキャン（START/STOP）
+    - 1周: Wi-Fiアクセスポイントのスキャン（約2秒）→ CH1〜13でESP-NOWを各0.25秒待ち受け（LR・通常モードとも受信）
+    - グラフ: 各CHの左の棒がWi-Fi APの最大RSSI（−60dBm以上 赤／−75dBm以上 黄／それ未満 緑、上の数字は台数）、右の水色の棒がESP-NOWの最大RSSI（上の数字は受信フレーム数）。棒は測定ごとに順次更新
+    - 見出しに現在の動作（`Wi-Fi AP scan` / `ESP-NOW RX CHn`）、待ち受け中のCHは黄色表示と▼、設定中のCHは枠付き、最も空いているCHは番号が緑
+    - STOP、または CLOSE でSETUPを抜けると、実行中の1周を終えてから設定中のチャンネル・LRモードに戻る。スキャン中は送信しない
+- 無線（ESP-NOW）
+  - ESP32-P4は無線を持たないため、ESP-NOWは内蔵ESP32-C6がesp-hosted（SDIO）経由で送受信します。
+  - P4側: `lib/esp_now_hosted` が `esp_now_*` をesp-hostedのCustomRpcへ中継（送信は応答待ちなし）。Tab5ではpromiscuousモードが使えないため、RSSIは受信フレームごとの値を使用
+  - C6側: ESPHomeの [esp-hosted-firmware](https://github.com/esphome/esp-hosted-firmware) v2.12.13（ESP-NOWオーバーレイ入り、Apache-2.0）を `assets/c6/` に同梱。P4側（arduino-esp32 3.3.12）のesp-hostedと同じ版
+  - 起動時にC6がESP-NOW要求に応答しなければ、同梱ファームをP4からC6へ自動で書き込み、再起動します。出荷時のC6ファーム（esp-hosted 1.4.1）からもこの方法で更新できることを確認済み
+  - 自動更新できない場合の予備として、UART接続でC6へ書き込むためのファイル一式を `assets/c6/wired/` に置いています
+- ビルド環境: pioarduino（Arduino core 3.x / ESP-IDF 5.5）。初回ビルド時に自動でダウンロードされます
+  - 同じPCで従来の `espressif32@6.12.0` と併用して `No module named 'intelhex'` が出た場合は、`~/.platformio/penv/bin/pip install intelhex` で解消します
+
 ## バージョン来歴
 - v1.0: 新規作成
 - v1.1: M5AtomS3 + Atomic Echo Base対応、ケロケロボイス対応
@@ -107,6 +131,7 @@ M5StickS3、M5AtomS3 + Atomic Echo Base、M5Paper Colorで動作する、WiFi音
 - v1.3: Wi-Fiをスリープモードにし、消費電力を削減
 - v1.4: 音質改善（受信再生の安定化）、パケットフィルタ機能追加
 - v1.5: M5Paper Color対応（名札表示・設定画面・LED表示）、連続送信、受信優先/割り込み送信制御、PaperColor用ネックストラップケース
+- v1.6: M5Stack Tab5対応（C6経由のESP-NOW、タッチ操作、全画面画像、SETUP画面、チャンネルスキャン）
 
 ## ライセンス
 　MIT License

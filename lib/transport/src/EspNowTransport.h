@@ -18,6 +18,7 @@ private:
     volatile uint32_t m_last_rx_ms = 0;
     volatile uint32_t m_tx_packets = 0;
     volatile uint32_t m_tx_failures = 0;
+    volatile bool m_ready = false;
 protected:
     void send();
 public:
@@ -27,6 +28,7 @@ public:
     void        setRSSI(int16_t rssi) { m_rssi = rssi;}
     int16_t     getRSSI(void) override;
     uint32_t    getLastRxMs(void) override { return m_last_rx_ms; }
+    bool        isReady(void) const { return m_ready; }
     uint16_t    getWifiChannel(void) { return m_wifi_channel;}
     void        setWifiChannel(uint16_t ch);
     void        snapshot_and_reset_stats(uint32_t &rx_ok,

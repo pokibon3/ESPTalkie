@@ -5,12 +5,17 @@
 #include "OutputBuffer.h"
 #include "EspNowTransport.h"
 #include "config.h"
+#include <esp_idf_version.h>
+#include "esp_now_hosted.h"  // defines ESP_NOW_HOSTED_SHIM (1 on ESP32-P4 / esp-hosted)
 
 const int MAX_ESP_NOW_PACKET_SIZE = 250;
 const uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
 static EspNowTransport *instance = NULL;
 
+void receiveCallback(const uint8_t *macAddr, const uint8_t *data, int dataLen);
+
+#if !ESP_NOW_HOSTED_SHIM
 static void promiscuous_rx_cb(void *buf, wifi_promiscuous_pkt_type_t type)
 {
     if (!instance || type != WIFI_PKT_MGMT) {
@@ -19,6 +24,19 @@ static void promiscuous_rx_cb(void *buf, wifi_promiscuous_pkt_type_t type)
     const wifi_promiscuous_pkt_t *ppkt = static_cast<wifi_promiscuous_pkt_t *>(buf);
     instance->setRSSI(ppkt->rx_ctrl.rssi);
 }
+#endif
+
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
+// IDF 5.x: RSSI comes with each frame (also works through esp-hosted, where
+// promiscuous mode is not available on the host).
+static void receiveCallbackIdf5(const esp_now_recv_info_t *info, const uint8_t *data, int dataLen)
+{
+    if (instance && info && info->rx_ctrl) {
+        instance->setRSSI(info->rx_ctrl->rssi);
+    }
+    receiveCallback(info ? info->src_addr : nullptr, data, dataLen);
+}
+#endif
 
 void receiveCallback(const uint8_t *macAddr, const uint8_t *data, int dataLen)
 {
@@ -53,7 +71,13 @@ void receiveCallback(const uint8_t *macAddr, const uint8_t *data, int dataLen)
 void EspNowTransport::setWifiChannel(uint16_t ch)
 {
     m_wifi_channel  = ch;
-    esp_wifi_set_channel(m_wifi_channel, WIFI_SECOND_CHAN_NONE);
+    if (!m_ready) {
+        return;  // radio not up (e.g. Tab5 C6 without ESP-NOW): don't block on RPC
+    }
+    esp_err_t err = esp_wifi_set_channel(m_wifi_channel, WIFI_SECOND_CHAN_NONE);
+    if (err != ESP_OK) {
+        Serial.printf("esp_wifi_set_channel(%u) failed: %s\n", m_wifi_channel, esp_err_to_name(err));
+    }
 }
 
 
@@ -61,16 +85,30 @@ void EspNowTransport::setWifiChannel(uint16_t ch)
 bool EspNowTransport::begin()
 {
     // Set Wifi channel
+#if !ESP_NOW_HOSTED_SHIM
     esp_wifi_set_promiscuous(true);
-    esp_wifi_set_channel(m_wifi_channel, WIFI_SECOND_CHAN_NONE);
+#endif
+    esp_err_t ch_err = esp_wifi_set_channel(m_wifi_channel, WIFI_SECOND_CHAN_NONE);
+    if (ch_err != ESP_OK) {
+        Serial.printf("esp_wifi_set_channel(%u) failed: %s\n", m_wifi_channel, esp_err_to_name(ch_err));
+    }
 #ifdef ESPNOW_LONG_RANGE
-    esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_LR);
+    esp_err_t lr_err = esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_LR);
+    if (lr_err != ESP_OK) {
+        Serial.printf("esp_wifi_set_protocol(LR) failed: %s\n", esp_err_to_name(lr_err));
+    }
 #endif
     esp_err_t result = esp_now_init();
     if (result == ESP_OK) {
         Serial.println("ESPNow Init Success");
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
+        esp_now_register_recv_cb(receiveCallbackIdf5);
+#else
         esp_now_register_recv_cb(receiveCallback);
+#endif
+#if !ESP_NOW_HOSTED_SHIM
         esp_wifi_set_promiscuous_rx_cb(&promiscuous_rx_cb);
+#endif
     } else {
         Serial.printf("ESPNow Init failed: %s\n", esp_err_to_name(result));
         return false;
@@ -85,6 +123,7 @@ bool EspNowTransport::begin()
             return false;
         }   
     }
+    m_ready = true;
     return true;
 }
 
@@ -96,11 +135,23 @@ EspNowTransport::EspNowTransport(OutputBuffer *output_buffer, uint8_t wifi_chann
 
 int16_t EspNowTransport::getRSSI(void)
 {
+#if ESP_NOW_HOSTED_SHIM
+  // RSSI only comes with received frames here (no promiscuous mode), so drop
+  // back to "no signal" once the other station has stopped.
+  constexpr uint32_t kRssiHoldMs = 1000;
+  const uint32_t last = m_last_rx_ms;
+  if (last == 0 || millis() - last > kRssiHoldMs) {
+    return -127;
+  }
+#endif
   return m_rssi;
 }
 
 void EspNowTransport::send()
 {
+  if (!m_ready) {
+    return;
+  }
   m_tx_packets++;
   esp_err_t result = esp_now_send(broadcastAddress, m_buffer, m_index + m_header_size);
 //  Serial.printf("m_index : %d\n", m_index);
