@@ -107,9 +107,10 @@ M5StickS3、M5AtomS3 + Atomic Echo Base、M5Paper Colorで動作する、WiFi音
   - 起動時にC6がESP-NOW要求に応答しなければ、同梱ファームをC6へ自動で書き込み、再起動します（初回のみ）。
   - P4側は `lib/esp_now_hosted` が `esp_now_*` をesp-hostedのCustomRpcへ中継します（送信は応答待ちなし）。
 - 画面（縦向き 720x1280）
-  - メイン: SDカード `/images` 内の JPG/PNG/BMP をファイル名順に全画面スライドショー（間隔は `config.h` の `TAB5_SLIDESHOW_INTERVAL_MS`）
-  - 下部中央: レベルメーター（受信時RSSI／送信時出力、状態・CH/VOL/モード表示）とPTTボタン、右下: SETUPボタン
-  - SETUP: CHANNEL −/＋、VOLUME −/＋、VOICE M1/M2/M3 の設定画面。同じ位置の CLOSE で戻る
+  - メイン: SDカードの `/images/pokibon.jpeg`（`config.h` の `TAB5_IMAGE_PATH`）を全画面表示。下部中央にPTT、右下にSETUP
+  - SETUP: CHANNEL −/＋、VOLUME −/＋、VOICE M1/M2/M3、受信RSSI/送信出力メーター、チャンネルスキャン
+    - スキャン: START でCH1〜13のWi-Fiアクセスポイントを繰り返しスキャンし、各CHの最大RSSIと台数をグラフ表示（最も空いているCHの番号を緑表示、現在のCHは枠付き）
+    - STOP、または CLOSE でSETUPを抜けると、設定中のチャンネル・LRモードに戻る。スキャン中は送信しない
 - PTTボタンは押している間送信。指がボタン外に出ると解除。ダブルタップで連続送信のON/OFF。
 
 ## バージョン来歴

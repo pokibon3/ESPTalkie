@@ -143,6 +143,5 @@
 #define SHAKE_Z_DOMINANCE_G      SHAKE_X_DOMINANCE_G
 #define SHAKE_COOLDOWN_MS        450
 
-// M5Stack Tab5: SD card image slideshow (left pane)
-#define TAB5_SLIDESHOW_DIR         "/images"
-#define TAB5_SLIDESHOW_INTERVAL_MS 10000
+// M5Stack Tab5: background image on the SD card (JPG/PNG, fitted to 720x1280)
+#define TAB5_IMAGE_PATH            "/images/pokibon.jpeg"

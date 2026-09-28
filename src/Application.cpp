@@ -111,6 +111,11 @@ static void ptt_monitor_task(void *)
 
 static bool ptt_active()
 {
+#if TALKIE_TARGET_M5TAB5
+    if (tab5_ui_scanning()) {
+        return false;  // the channel scan owns the radio
+    }
+#endif
     const bool raw = ptt_button_pressed();
     if (!raw && !s_continuous_tx) {
         s_ptt_lockout = false;

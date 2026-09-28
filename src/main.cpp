@@ -520,7 +520,12 @@ void setup()
 
 #if TALKIE_TARGET_M5TAB5
     // UI first so C6 firmware update progress (Application::begin) is visible.
-    tab5_ui_begin(channel, volume_level, tx_pitch_mode);
+    tab5_ui_begin(channel, volume_level, tx_pitch_mode, [] {
+        // After a channel scan: back to the configured channel.
+        if (application) {
+            application->setChannel(static_cast<uint16_t>(channel));
+        }
+    });
 #elif !PTT_LOCAL_PLAYBACK_TEST_MODE && !TALKIE_TARGET_M5PAPERCOLOR
     draw_layout();
 #elif PTT_LOCAL_PLAYBACK_TEST_MODE
