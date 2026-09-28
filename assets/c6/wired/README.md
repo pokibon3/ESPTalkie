@@ -1,9 +1,10 @@
 # Tab5 C6: one-time wired flash
 
-The Tab5 ships with ESP-Hosted **1.4.1** on the ESP32-C6. That firmware has no
-OTA partitions, so it cannot be updated from the P4 (ESPTalkie reports
-"C6 fw too old: wired flash needed"). Flash it once over UART; afterwards the
-P4 can update it over SDIO.
+Normally not needed: ESPTalkie updates the C6 from the P4 over SDIO at boot,
+and this was confirmed to work from the factory ESP-Hosted **1.4.1** firmware.
+
+Use this kit only as a fallback, e.g. if the automatic update fails
+("C6 fw ...: OTA failed, wired flash needed") or the C6 image is broken.
 
 ## Files
 
