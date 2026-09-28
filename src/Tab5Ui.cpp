@@ -82,6 +82,8 @@ uint16_t s_now_frames[kChannels];
 volatile int8_t s_hop_rssi[kChannels];
 volatile uint16_t s_hop_frames[kChannels];
 volatile int s_hop_ch = 0;
+// 0 = idle, 1 = Wi-Fi AP scan, 2 = ESP-NOW listen on s_hop_ch
+volatile uint8_t s_scan_phase = 0;
 constexpr uint32_t kHopDwellMs = 250;
 
 // ── Drawing helpers ───────────────────────────────────────────────────────
@@ -127,9 +129,11 @@ void draw_ptt(bool pressed)
     M5.Display.setTextColor(TFT_WHITE, fill);
     M5.Display.drawString(s_tx ? (s_cont ? "CONT TX" : "TX") : "PTT",
                           r_ptt.x + r_ptt.w / 2, r_ptt.y + r_ptt.h / 2 - 10);
-    M5.Display.setFont(&fonts::FreeSans9pt7b);
-    M5.Display.drawString(s_cont ? "double-tap: stop" : "double-tap: continuous",
-                          r_ptt.x + r_ptt.w / 2, r_ptt.y + r_ptt.h / 2 + 30);
+    char sub[48];
+    snprintf(sub, sizeof(sub), "CH%02d   %s", s_channel,
+             s_cont ? "double-tap: stop" : "double-tap: continuous");
+    M5.Display.setFont(&fonts::FreeSans12pt7b);
+    M5.Display.drawString(sub, r_ptt.x + r_ptt.w / 2, r_ptt.y + r_ptt.h / 2 + 32);
 }
 
 void draw_setup_button(bool pressed)
@@ -255,12 +259,23 @@ void draw_scan()
     M5.Display.setTextDatum(top_left);
     M5.Display.setTextColor(c_sub, c_panel);
     char head[48];
-    if (s_scan_sweeps == 0) {
-        snprintf(head, sizeof(head), s_scan_running ? "CHANNEL SCAN  scanning..." : "CHANNEL SCAN  (press START)");
+    if (!s_scan_running) {
+        if (s_scan_sweeps == 0) {
+            snprintf(head, sizeof(head), "CHANNEL SCAN  (press START)");
+        } else {
+            snprintf(head, sizeof(head), "CHANNEL SCAN  #%lu", static_cast<unsigned long>(s_scan_sweeps));
+        }
+        M5.Display.drawString(head, r.x + 16, r.y + 10);
     } else {
-        snprintf(head, sizeof(head), "CHANNEL SCAN  #%lu", static_cast<unsigned long>(s_scan_sweeps));
+        // What the radio is doing right now.
+        if (s_scan_phase == 2 && s_hop_ch) {
+            snprintf(head, sizeof(head), "#%lu  ESP-NOW  RX CH%d", static_cast<unsigned long>(s_scan_sweeps + 1), s_hop_ch);
+        } else {
+            snprintf(head, sizeof(head), "#%lu  Wi-Fi AP scan", static_cast<unsigned long>(s_scan_sweeps + 1));
+        }
+        M5.Display.setTextColor(TFT_YELLOW, c_panel);
+        M5.Display.drawString(head, r.x + 16, r.y + 10);
     }
-    M5.Display.drawString(head, r.x + 16, r.y + 10);
     // legend
     M5.Display.setFont(&fonts::FreeSans9pt7b);
     M5.Display.setTextDatum(top_right);
@@ -336,14 +351,20 @@ void draw_scan()
                 M5.Display.drawString(c, x + bw + bw / 2, gy - 14);
             }
         }
-        // channel label: current = boxed, quietest = green
+        // channel label: listening now = yellow, configured = boxed,
+        // quietest = green number
+        const bool listening = s_scan_running && s_scan_phase == 2 && (ch + 1 == s_hop_ch);
         const bool current = (ch + 1 == s_channel);
         const bool quiet = s_scan_sweeps && ch == best;
-        const uint16_t lab_bg = current ? c_btn_pressed : c_panel;
+        const uint16_t lab_bg = listening ? TFT_YELLOW : (current ? c_btn_pressed : c_panel);
         M5.Display.fillRoundRect(x - 2, base + 8, 2 * bw + 4, 36, 6, lab_bg);
+        if (listening) {
+            // marker above the bars
+            M5.Display.fillTriangle(x + bw - 8, gy - 42, x + bw + 8, gy - 42, x + bw, gy - 30, TFT_YELLOW);
+        }
         M5.Display.setFont(&fonts::FreeSansBold12pt7b);
         M5.Display.setTextDatum(middle_center);
-        M5.Display.setTextColor(quiet ? TFT_GREEN : c_text, lab_bg);
+        M5.Display.setTextColor(listening ? TFT_BLACK : (quiet ? TFT_GREEN : c_text), lab_bg);
         char l[4];
         snprintf(l, sizeof(l), "%d", ch + 1);
         M5.Display.drawString(l, x + bw, base + 26);
@@ -395,7 +416,16 @@ void scan_task(void *)
     esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N | WIFI_PROTOCOL_LR);
     // Count every ESP-NOW frame; keep scan traffic out of the audio path.
     esp_now_hosted_set_monitor(scan_monitor, true);
+    auto redraw = [] {
+        if (s_panel_open) {
+            display_lock();
+            draw_scan();
+            display_unlock();
+        }
+    };
     while (!s_scan_stop) {
+        s_scan_phase = 1;
+        redraw();
         const int n = WiFi.scanNetworks(false, true, false, 120);
         int8_t rssi[kChannels];
         uint8_t count[kChannels];
@@ -421,10 +451,13 @@ void scan_task(void *)
             s_hop_rssi[ch - 1] = kNoSignal;
             s_hop_frames[ch - 1] = 0;
             s_hop_ch = ch;
+            s_scan_phase = 2;
             esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE);
+            redraw();
             vTaskDelay(pdMS_TO_TICKS(kHopDwellMs));
         }
         s_hop_ch = 0;
+        s_scan_phase = 0;
         if (s_scan_stop) {
             break;
         }
@@ -448,6 +481,7 @@ void scan_task(void *)
 
     esp_now_hosted_set_monitor(nullptr, false);
     s_hop_ch = 0;
+    s_scan_phase = 0;
 #ifdef ESPNOW_LONG_RANGE
     esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_LR);
 #endif
