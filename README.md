@@ -1,5 +1,5 @@
 # ESP32Talkie：WiFi音声トランシーバ
-M5StickS3、M5AtomS3 + Atomic Echo Base、M5Paper Color、M5Stack Tab5で動作する、WiFi音声トランシーバのサンプルコードです。
+M5StickS3、M5AtomS3 + Atomic Echo Base、M5Paper Color、M5Stack StopWatch、M5Stack Tab5で動作する、WiFi音声トランシーバのサンプルコードです。
 2.4GHz WiFiで音声通信ができるライセンスフリーのトランシーバで、Espressif社のESP-NOWプロトコルを使用します。
 
 ![ESP32Talkie](ESP32Talkie.JPG)
@@ -12,8 +12,8 @@ M5StickS3、M5AtomS3 + Atomic Echo Base、M5Paper Color、M5Stack Tab5で動作�
 - 音声出力：約1.0W
 - プロトコル：ESP-NOW Long Range Mode（Espressif）
 - 通信距離：最大1km（見通し距離）
-- 制御マイコン：M5StickS3 / M5AtomS3 + Atomic Echo Base / M5Paper Color（いずれもESP32-S3）、M5Stack Tab5（ESP32-P4 + 無線用ESP32-C6）
-- 電源：リチウムポリマー電池 3.7V（M5StickS3: 250mAh、M5Paper Color: 1250mAh）
+- 制御マイコン：M5StickS3 / M5AtomS3 + Atomic Echo Base / M5Paper Color / M5Stack StopWatch（いずれもESP32-S3）、M5Stack Tab5（ESP32-P4 + 無線用ESP32-C6）
+- 電源：リチウムポリマー電池 3.7V（M5StickS3: 250mAh、M5Paper Color: 1250mAh、M5Stack StopWatch: 450mAh）
 - 消費電力：最大約１W（送信時）
 - その他：ライセンスフリー
 - 工事設計認証番号：219-259730
@@ -27,6 +27,7 @@ M5StickS3、M5AtomS3 + Atomic Echo Base、M5Paper Color、M5Stack Tab5で動作�
 | `m5stack-sticks3`（デフォルト） | M5StickS3 |
 | `m5stack-atoms3-echo-base` | M5AtomS3 + Atomic Echo Base |
 | `m5stack-papercolor` | M5Paper Color |
+| `m5stack-stopwatch` | M5Stack StopWatch（466x466 丸型AMOLED） |
 | `m5stack-tab5` | M5Stack Tab5（縦持ち、pioarduino / Arduino 3.x） |
 
 - atomic14氏の [ESP32-walkie-talkie](https://github.com/atomic14/esp32-walkie-talkie) プロジェクトから、`transport` クラスおよび `OutputBuffer` クラスを流用・改造して利用しています。
@@ -101,6 +102,24 @@ M5StickS3、M5AtomS3 + Atomic Echo Base、M5Paper Color、M5Stack Tab5で動作�
 - 上面（上ボタン・マイク・LED）は塞がず、側面ボタン・USB-C・Groveポートは開口しています。
 - 背面を下にしてサポートなしで印刷できます。
 
+### M5Stack StopWatch
+- 丸型AMOLED（466x466）で使用します。
+- ボタン
+  - 青ボタン（BtnB）: PTT。押している間送信、ダブルタップで連続送信のON/OFF
+  - 黄ボタン（BtnA）: 1秒長押しでSETUP画面の開閉（誤操作防止のため、メイン画面では短押しは無効）
+- メイン画面
+  - 中央に画像（`assets/stopwatch-dog.jpg`、240x240 JPEGをファームに埋め込み）を円形に切り抜いて表示
+  - 画像まわりのリングで状態表示: 青=待受、緑=受信中、赤=送信、橙=連続送信（上部に RECEIVE / RECEIVING / TRANSMIT / CONT TX）
+  - 左: RSSI（送信中は送信出力 dBm）と8段メーター、右: 電池残量（充電中は CHG）、下: CH / VOL / VOICE
+- SETUP画面
+  - CHANNEL / VOLUME / VOICE（M1/M2/M3）
+  - 黄ボタン短押し: 項目切替、青ボタン短押し: 値＋1、タッチ: [−]/[＋]ボタン・項目行の選択
+  - 15秒操作がないと自動でメイン画面に戻る。SETUP中は送信しない（連続送信も停止）
+- 着信通知: 無音（1.5秒以上）の後に受信が始まると、振動モーターを「ブブブ」と3回動作（自局送信中は動作しない）
+  - 強さ・パターンは `config.h` の `STOPWATCH_VIBRATION_*` で調整、SETUP長押し時間・自動復帰時間は `STOPWATCH_SETUP_*`
+- ビルド環境: `espressif32@6.12.0`（Arduino core 2.x）、M5Unified 0.2.23以降（StopWatch対応版）。16MB Flash / 8MB OPI PSRAM
+- 画像を差し替える場合は `assets/stopwatch-dog.jpg`（240x240 のJPEG）を置き換えてビルドします
+
 ### M5Stack Tab5
 - 縦持ち（720x1280）で使用します。
 - メイン画面
@@ -132,6 +151,7 @@ M5StickS3、M5AtomS3 + Atomic Echo Base、M5Paper Color、M5Stack Tab5で動作�
 - v1.4: 音質改善（受信再生の安定化）、パケットフィルタ機能追加
 - v1.5: M5Paper Color対応（名札表示・設定画面・LED表示）、連続送信、受信優先/割り込み送信制御、PaperColor用ネックストラップケース
 - v1.6: M5Stack Tab5対応（C6経由のESP-NOW、タッチ操作、全画面画像、SETUP画面、チャンネルスキャン）
+- v1.7: M5Stack StopWatch対応（丸型AMOLED・円形画像表示、青ボタンPTT、黄ボタン長押しSETUP、着信バイブレーション）
 
 ## ライセンス
 　MIT License

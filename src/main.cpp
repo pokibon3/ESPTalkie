@@ -10,6 +10,7 @@
 #include "Application.h"
 #include "DisplaySync.h"
 #include "PaperColorUi.h"
+#include "StopWatchUi.h"
 #include "Tab5Ui.h"
 #include "UiLayout.h"
 #include "config.h"
@@ -440,6 +441,95 @@ void papercolor_loop()
 }
 #endif
 
+#if TALKIE_TARGET_M5STOPWATCH
+void stopwatch_apply_delta(int delta)
+{
+    switch (stopwatch_ui_selected_item()) {
+        case StopWatchSetupItem::Channel:
+            channel = wrapped_step(channel, 1, 13, delta);
+            application->setChannel(static_cast<uint16_t>(channel));
+            prefs.putInt("channel", channel);
+            break;
+        case StopWatchSetupItem::Volume:
+            volume_level = wrapped_step(volume_level, 1, 5, delta);
+            application->setSpeakerVolume(current_speaker_gain());
+            prefs.putInt("volume", volume_level);
+            break;
+        case StopWatchSetupItem::Voice:
+        default:
+            tx_pitch_mode = static_cast<uint8_t>(wrapped_step(
+                static_cast<int>(tx_pitch_mode),
+                static_cast<int>(Application::kTxPitchModeM1),
+                static_cast<int>(Application::kTxPitchModeM3),
+                delta));
+            application->setTxPitchMode(tx_pitch_mode);
+            prefs.putInt("txmode", tx_pitch_mode);
+            break;
+    }
+    stopwatch_ui_set_settings(channel, volume_level, tx_pitch_mode);
+}
+
+void stopwatch_loop()
+{
+    // Blue (BtnB) = PTT on the main screen (read by the PTT task).
+    // Yellow (BtnA) long press = open / close SETUP (short presses are ignored
+    // on the main screen, so a bump can't change anything).
+    // In SETUP: yellow click = next item, blue click = +1, touch [-]/[+]/row.
+    static uint32_t last_input_ms = 0;
+    const uint32_t now = millis();
+
+    stopwatch_ui_service(application->getLastRxMs());
+
+    if (M5.BtnA.wasHold()) {
+        const bool open = !stopwatch_ui_setup_visible();
+        stopwatch_ui_show_setup(open);
+        last_input_ms = now;
+        vTaskDelay(pdMS_TO_TICKS(5));
+        return;
+    }
+
+    if (stopwatch_ui_setup_visible()) {
+        int delta = 0;
+        if (M5.BtnA.wasClicked()) {
+            const uint8_t next = static_cast<uint8_t>(
+                (static_cast<uint8_t>(stopwatch_ui_selected_item()) + 1) %
+                static_cast<uint8_t>(StopWatchSetupItem::Count));
+            stopwatch_ui_set_selected_item(static_cast<StopWatchSetupItem>(next));
+            last_input_ms = now;
+        }
+        if (M5.BtnB.wasClicked()) {
+            delta = +1;
+        }
+        switch (stopwatch_ui_poll_touch()) {
+            case StopWatchTouch::Minus: delta = -1; break;
+            case StopWatchTouch::Plus: delta = +1; break;
+            case StopWatchTouch::SelectChannel:
+                stopwatch_ui_set_selected_item(StopWatchSetupItem::Channel);
+                last_input_ms = now;
+                break;
+            case StopWatchTouch::SelectVolume:
+                stopwatch_ui_set_selected_item(StopWatchSetupItem::Volume);
+                last_input_ms = now;
+                break;
+            case StopWatchTouch::SelectVoice:
+                stopwatch_ui_set_selected_item(StopWatchSetupItem::Voice);
+                last_input_ms = now;
+                break;
+            default:
+                break;
+        }
+        if (delta != 0) {
+            stopwatch_apply_delta(delta);
+            last_input_ms = now;
+        }
+        if (now - last_input_ms >= STOPWATCH_SETUP_TIMEOUT_MS) {
+            stopwatch_ui_show_setup(false);
+        }
+    }
+    vTaskDelay(pdMS_TO_TICKS(5));
+}
+#endif
+
 #if TALKIE_TARGET_M5TAB5
 void tab5_loop()
 {
@@ -483,7 +573,7 @@ void setup()
 {
     Serial.begin(115200);
     auto cfg = M5.config();
-#if TALKIE_TARGET_M5STICKS3 || TALKIE_TARGET_M5PAPERCOLOR
+#if TALKIE_TARGET_M5STICKS3 || TALKIE_TARGET_M5PAPERCOLOR || TALKIE_TARGET_M5STOPWATCH
     cfg.output_power = false;
 #else
     cfg.output_power = true;
@@ -503,6 +593,10 @@ void setup()
     pinMode(kPaperButtonCPin, INPUT_PULLUP);
     M5.Display.setRotation(0);
     M5.Display.setEpdMode(epd_mode_t::epd_quality);
+#endif
+#if TALKIE_TARGET_M5STOPWATCH
+    // Yellow button: long press only, to avoid accidental SETUP.
+    M5.BtnA.setHoldThresh(STOPWATCH_SETUP_HOLD_MS);
 #endif
 
     prefs.begin("esptalkie", false);
@@ -526,6 +620,8 @@ void setup()
             application->setChannel(static_cast<uint16_t>(channel));
         }
     });
+#elif TALKIE_TARGET_M5STOPWATCH
+    stopwatch_ui_begin(channel, volume_level, tx_pitch_mode);
 #elif !PTT_LOCAL_PLAYBACK_TEST_MODE && !TALKIE_TARGET_M5PAPERCOLOR
     draw_layout();
 #elif PTT_LOCAL_PLAYBACK_TEST_MODE
@@ -567,6 +663,10 @@ void loop()
 #endif
 #if TALKIE_TARGET_M5TAB5
     tab5_loop();
+    return;
+#endif
+#if TALKIE_TARGET_M5STOPWATCH
+    stopwatch_loop();
     return;
 #endif
 #if PTT_LOCAL_PLAYBACK_TEST_MODE

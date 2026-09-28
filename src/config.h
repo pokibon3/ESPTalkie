@@ -20,6 +20,12 @@
 #define TALKIE_TARGET_M5PAPERCOLOR 0
 #endif
 
+#if defined(TARGET_M5STOPWATCH)
+#define TALKIE_TARGET_M5STOPWATCH 1
+#else
+#define TALKIE_TARGET_M5STOPWATCH 0
+#endif
+
 #if defined(TARGET_M5TAB5)
 #define TALKIE_TARGET_M5TAB5 1
 #else
@@ -42,6 +48,8 @@
 #define MIC_MAGNIFICATION 20
 #elif TALKIE_TARGET_M5TAB5
 #define MIC_MAGNIFICATION 40
+#elif TALKIE_TARGET_M5STOPWATCH
+#define MIC_MAGNIFICATION 20
 #else
 #define MIC_MAGNIFICATION 20
 #endif
@@ -114,7 +122,7 @@
 #define TX_8BIT_COMPRESSOR_ENABLE 0
 
 // Horizontal shake to change current setting (same effect as BtnB click)
-#if TALKIE_TARGET_M5TAB5
+#if TALKIE_TARGET_M5TAB5 || TALKIE_TARGET_M5STOPWATCH
 #define SHAKE_SWITCH_ENABLED     0
 #else
 #define SHAKE_SWITCH_ENABLED     1
@@ -145,3 +153,14 @@
 
 // M5Stack Tab5: background image on the SD card (JPG/PNG, fitted to 720x1280)
 #define TAB5_IMAGE_PATH            "/images/pokibon.jpeg"
+
+// M5Stack StopWatch
+// Yellow button (BtnA) must be held this long to open / close SETUP.
+#define STOPWATCH_SETUP_HOLD_MS        1000
+// SETUP closes by itself after this much inactivity.
+#define STOPWATCH_SETUP_TIMEOUT_MS     15000
+// Vibration on incoming call: pulses x (on + off) ms, level 0-255.
+#define STOPWATCH_VIBRATION_PULSES     3
+#define STOPWATCH_VIBRATION_ON_MS      90
+#define STOPWATCH_VIBRATION_OFF_MS     80
+#define STOPWATCH_VIBRATION_LEVEL      200

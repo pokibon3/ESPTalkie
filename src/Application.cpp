@@ -12,6 +12,7 @@
 #include "EspNowTransport.h"
 #include "OutputBuffer.h"
 #include "PaperColorUi.h"
+#include "StopWatchUi.h"
 #include "Tab5Coprocessor.h"
 #include "Tab5Ui.h"
 #include "UiLayout.h"
@@ -35,6 +36,9 @@ static bool ptt_button_pressed()
 #elif TALKIE_TARGET_M5TAB5
     // On-screen PTT button (touch), sampled by the UI loop.
     return tab5_ui_ptt_pressed();
+#elif TALKIE_TARGET_M5STOPWATCH
+    // Blue button (BtnB) is PTT; disabled while SETUP is shown.
+    return stopwatch_ui_ptt_pressed();
 #else
     return M5.BtnA.isPressed();
 #endif
@@ -114,6 +118,11 @@ static bool ptt_active()
 #if TALKIE_TARGET_M5TAB5
     if (tab5_ui_scanning()) {
         return false;  // the channel scan owns the radio
+    }
+#endif
+#if TALKIE_TARGET_M5STOPWATCH
+    if (stopwatch_ui_setup_visible()) {
+        return false;  // no TX (incl. continuous TX) while SETUP is open
     }
 #endif
     const bool raw = ptt_button_pressed();
@@ -951,6 +960,11 @@ int16_t Application::getRSSI()
     return m_transport->getRSSI();
 }
 
+uint32_t Application::getLastRxMs()
+{
+    return m_transport ? m_transport->getLastRxMs() : 0;
+}
+
 void Application::dispRSSI(int16_t rssi)
 {
 #if TALKIE_TARGET_M5PAPERCOLOR
@@ -959,6 +973,10 @@ void Application::dispRSSI(int16_t rssi)
 #endif
 #if TALKIE_TARGET_M5TAB5
     tab5_ui_set_rssi(rssi);
+    return;
+#endif
+#if TALKIE_TARGET_M5STOPWATCH
+    stopwatch_ui_set_rssi(rssi);
     return;
 #endif
     display_lock();
@@ -1029,6 +1047,10 @@ void Application::dispStatus(bool transmitting)
     tab5_ui_set_status(transmitting, s_continuous_tx);
     return;
 #endif
+#if TALKIE_TARGET_M5STOPWATCH
+    stopwatch_ui_set_status(transmitting, s_continuous_tx);
+    return;
+#endif
     display_lock();
     const uint16_t status_color = transmitting
         ? TFT_RED
@@ -1083,6 +1105,10 @@ void Application::dispTxPower(int16_t dbm)
 #endif
 #if TALKIE_TARGET_M5TAB5
     tab5_ui_set_tx_power(dbm);
+    return;
+#endif
+#if TALKIE_TARGET_M5STOPWATCH
+    stopwatch_ui_set_tx_power(dbm);
     return;
 #endif
     display_lock();

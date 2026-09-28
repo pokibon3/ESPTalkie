@@ -23,6 +23,7 @@ public:
 
     Application();
     int16_t getRSSI(void);
+    uint32_t getLastRxMs(void);
     void dispRSSI(int16_t);
     void dispStatus(bool transmitting);
     void dispTxPower(int16_t dbm);
