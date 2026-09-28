@@ -135,6 +135,15 @@ EspNowTransport::EspNowTransport(OutputBuffer *output_buffer, uint8_t wifi_chann
 
 int16_t EspNowTransport::getRSSI(void)
 {
+#if ESP_NOW_HOSTED_SHIM
+  // RSSI only comes with received frames here (no promiscuous mode), so drop
+  // back to "no signal" once the other station has stopped.
+  constexpr uint32_t kRssiHoldMs = 1000;
+  const uint32_t last = m_last_rx_ms;
+  if (last == 0 || millis() - last > kRssiHoldMs) {
+    return -127;
+  }
+#endif
   return m_rssi;
 }
 

@@ -107,8 +107,9 @@ M5StickS3、M5AtomS3 + Atomic Echo Base、M5Paper Colorで動作する、WiFi音
   - 起動時にC6がESP-NOW要求に応答しなければ、同梱ファームをC6へ自動で書き込み、再起動します（初回のみ）。
   - P4側は `lib/esp_now_hosted` が `esp_now_*` をesp-hostedのCustomRpcへ中継します（送信は応答待ちなし）。
 - 画面（横向き 1280x720）
-  - 左: SDカード `/images` 内の JPG/PNG/BMP をファイル名順にスライドショー（間隔は `config.h` の `TAB5_SLIDESHOW_INTERVAL_MS`）
-  - 右: 送受信状態・電池、CHANNEL −/＋、VOLUME −/＋、M1/M2/M3、RSSI/送信出力、PTTボタン
+  - メイン: SDカード `/images` 内の JPG/PNG/BMP をファイル名順に全画面スライドショー（間隔は `config.h` の `TAB5_SLIDESHOW_INTERVAL_MS`）
+  - 下部中央: レベルメーター（受信時RSSI／送信時出力、状態・CH/VOL/モード表示）とPTTボタン、右下: SETUPボタン
+  - SETUP: CHANNEL −/＋、VOLUME −/＋、VOICE M1/M2/M3 の設定画面。同じ位置の CLOSE で戻る
 - PTTボタンは押している間送信。指がボタン外に出ると解除。ダブルタップで連続送信のON/OFF。
 
 ## バージョン来歴
