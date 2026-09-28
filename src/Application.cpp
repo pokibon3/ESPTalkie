@@ -875,7 +875,9 @@ void Application::begin()
 
 #if TALKIE_TARGET_M5TAB5
     // ESP-NOW runs on the C6 co-processor; update its firmware if needed.
-    tab5_coprocessor_ensure_espnow();
+    const bool radio_possible = tab5_coprocessor_ensure_espnow();
+#else
+    const bool radio_possible = true;
 #endif
 
     const char *packet_magic = ESPNOW_PACKET_MAGIC_TEXT;
@@ -884,7 +886,11 @@ void Application::begin()
         Serial.println("Failed to set ESP-NOW packet header filter");
     }
 
-    m_transport->begin();
+    if (radio_possible) {
+        m_transport->begin();
+    } else {
+        Serial.println("Radio disabled: ESP-NOW not available");
+    }
 #endif
 
     M5.Speaker.begin();
@@ -1324,7 +1330,7 @@ void Application::loop()
             if (enable_tx_overlay) {
                 dispStatus(true);
                 int8_t tx_qdbm = 0;
-                if (esp_wifi_get_max_tx_power(&tx_qdbm) == ESP_OK) {
+                if (static_cast<EspNowTransport *>(m_transport)->isReady() && esp_wifi_get_max_tx_power(&tx_qdbm) == ESP_OK) {
                     dispTxPower(tx_qdbm / 4);
                 }
             }
@@ -1391,7 +1397,7 @@ void Application::loop()
                     if (now - last_rssi_draw_ms >= 500) {
                         dispStatus(true);
                         int8_t tx_qdbm = 0;
-                        if (esp_wifi_get_max_tx_power(&tx_qdbm) == ESP_OK) {
+                        if (static_cast<EspNowTransport *>(m_transport)->isReady() && esp_wifi_get_max_tx_power(&tx_qdbm) == ESP_OK) {
                             dispTxPower(tx_qdbm / 4);
                         }
                         last_rssi_draw_ms = now;

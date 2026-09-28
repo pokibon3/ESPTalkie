@@ -416,6 +416,7 @@ Tab5Action tab5_ui_poll()
         } else if (r_mode[2].contains(t.x, t.y)) {
             action = Tab5Action::Mode3;
         }
+        Serial.printf("Tab5 touch: (%d,%d) action=%d\n", t.x, t.y, static_cast<int>(action));
         if (flash) {
             flash_button(*flash, flash_label);
         }
@@ -423,6 +424,7 @@ Tab5Action tab5_ui_poll()
 
     s_ptt_touched = ptt;
     if (ptt != s_ptt_drawn_pressed) {
+        Serial.printf("Tab5 PTT %s\n", ptt ? "pressed" : "released");
         s_ptt_drawn_pressed = ptt;
         display_lock();
         draw_ptt(ptt);

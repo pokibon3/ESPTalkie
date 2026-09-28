@@ -71,6 +71,9 @@ void receiveCallback(const uint8_t *macAddr, const uint8_t *data, int dataLen)
 void EspNowTransport::setWifiChannel(uint16_t ch)
 {
     m_wifi_channel  = ch;
+    if (!m_ready) {
+        return;  // radio not up (e.g. Tab5 C6 without ESP-NOW): don't block on RPC
+    }
     esp_err_t err = esp_wifi_set_channel(m_wifi_channel, WIFI_SECOND_CHAN_NONE);
     if (err != ESP_OK) {
         Serial.printf("esp_wifi_set_channel(%u) failed: %s\n", m_wifi_channel, esp_err_to_name(err));
@@ -120,6 +123,7 @@ bool EspNowTransport::begin()
             return false;
         }   
     }
+    m_ready = true;
     return true;
 }
 
@@ -136,6 +140,9 @@ int16_t EspNowTransport::getRSSI(void)
 
 void EspNowTransport::send()
 {
+  if (!m_ready) {
+    return;
+  }
   m_tx_packets++;
   esp_err_t result = esp_now_send(broadcastAddress, m_buffer, m_index + m_header_size);
 //  Serial.printf("m_index : %d\n", m_index);
