@@ -76,6 +76,7 @@ volatile bool s_scan_stop = false;
 int8_t s_scan_rssi[kChannels];   // strongest AP per channel (kNoSignal = none)
 uint8_t s_scan_count[kChannels]; // number of APs per channel
 uint32_t s_scan_sweeps = 0;
+bool s_scan_has_data = false;  // graph shows measurements
 // ESP-NOW activity heard while hopping (LR and 11b/g/n)
 int8_t s_now_rssi[kChannels];
 uint16_t s_now_frames[kChannels];
@@ -309,7 +310,7 @@ void draw_scan()
         return s_scan_rssi[ch] > s_now_rssi[ch] ? s_scan_rssi[ch] : s_now_rssi[ch];
     };
     int best = 0;
-    if (s_scan_sweeps) {
+    if (s_scan_has_data) {
         for (int ch = 1; ch < kChannels; ++ch) {
             if (level(ch) < level(best)) best = ch;
         }
@@ -323,7 +324,7 @@ void draw_scan()
     const int bw = (slot - 8) / 2;
     for (int ch = 0; ch < kChannels; ++ch) {
         const int x = gx + ch * slot + 4;
-        if (s_scan_sweeps) {
+        if (s_scan_has_data) {
             const int16_t ap = s_scan_rssi[ch];
             if (ap > kNoSignal) {
                 const int h = bar_h(ap);
@@ -355,7 +356,7 @@ void draw_scan()
         // quietest = green number
         const bool listening = s_scan_running && s_scan_phase == 2 && (ch + 1 == s_hop_ch);
         const bool current = (ch + 1 == s_channel);
-        const bool quiet = s_scan_sweeps && ch == best;
+        const bool quiet = s_scan_has_data && ch == best;
         const uint16_t lab_bg = listening ? TFT_YELLOW : (current ? c_btn_pressed : c_panel);
         M5.Display.fillRoundRect(x - 2, base + 8, 2 * bw + 4, 36, 6, lab_bg);
         if (listening) {
@@ -446,6 +447,10 @@ void scan_task(void *)
             vTaskDelay(pdMS_TO_TICKS(500));
             continue;
         }
+        // Show the AP result right away.
+        memcpy(s_scan_rssi, rssi, sizeof(rssi));
+        memcpy(s_scan_count, count, sizeof(count));
+        s_scan_has_data = true;
         // Listen for ESP-NOW on each channel (mixed LR + 11b/g/n receive).
         for (int ch = 1; ch <= kChannels && !s_scan_stop; ++ch) {
             s_hop_rssi[ch - 1] = kNoSignal;
@@ -455,17 +460,14 @@ void scan_task(void *)
             esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE);
             redraw();
             vTaskDelay(pdMS_TO_TICKS(kHopDwellMs));
+            // Update this channel's ESP-NOW bar as soon as its dwell ends.
+            s_now_rssi[ch - 1] = s_hop_rssi[ch - 1];
+            s_now_frames[ch - 1] = s_hop_frames[ch - 1];
         }
         s_hop_ch = 0;
         s_scan_phase = 0;
         if (s_scan_stop) {
             break;
-        }
-        memcpy(s_scan_rssi, rssi, sizeof(rssi));
-        memcpy(s_scan_count, count, sizeof(count));
-        for (int i = 0; i < kChannels; ++i) {
-            s_now_rssi[i] = s_hop_rssi[i];
-            s_now_frames[i] = s_hop_frames[i];
         }
         s_scan_sweeps++;
         Serial.printf("Tab5 scan #%lu: %d APs, ESP-NOW frames:", static_cast<unsigned long>(s_scan_sweeps), n);
@@ -476,7 +478,6 @@ void scan_task(void *)
             draw_scan();
             display_unlock();
         }
-        vTaskDelay(pdMS_TO_TICKS(200));
     }
 
     esp_now_hosted_set_monitor(nullptr, false);
@@ -506,6 +507,11 @@ void scan_start()
     s_scan_stop = false;
     s_scan_running = true;
     s_scan_sweeps = 0;
+    s_scan_has_data = false;
+    for (int i = 0; i < kChannels; ++i) {
+        s_now_rssi[i] = kNoSignal;
+        s_now_frames[i] = 0;
+    }
     display_lock();
     draw_panel_title();
     draw_scan();
