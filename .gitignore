@@ -12,3 +12,6 @@ spiffs_extract/
 
 # Claude (Cowork) outputs
 Claude outputs/
+
+# Wi-Fi credentials for NTP (StopWatch)
+src/wifi_secrets.h

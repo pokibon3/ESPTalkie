@@ -164,3 +164,20 @@
 #define STOPWATCH_VIBRATION_ON_MS      90
 #define STOPWATCH_VIBRATION_OFF_MS     80
 #define STOPWATCH_VIBRATION_LEVEL      200
+// Clock: hands over the photo are translucent (alpha 0-255); a yellow click
+// shows them opaque for STOPWATCH_HANDS_CLEAR_MS.
+#define STOPWATCH_HANDS_ALPHA          80
+#define STOPWATCH_HANDS_CLEAR_MS       5000
+#define STOPWATCH_SHOW_SECONDS         1
+// Time zone (POSIX TZ) and NTP. Wi-Fi credentials: src/wifi_secrets.h
+#define STOPWATCH_TZ                   "JST-9"
+#define STOPWATCH_NTP_SERVER1          "ntp.nict.jp"
+#define STOPWATCH_NTP_SERVER2          "pool.ntp.org"
+#define STOPWATCH_NTP_ON_BOOT          1
+// Boot-time sync is skipped while the RTC is valid and the last NTP sync is
+// newer than this (seconds).
+#define STOPWATCH_NTP_INTERVAL_S       86400
+#define STOPWATCH_WIFI_TIMEOUT_MS      10000
+#define STOPWATCH_NTP_TIMEOUT_MS       5000
+// SETUP > WIFI: phone setup page closes after this long
+#define STOPWATCH_WIFI_SETUP_TIMEOUT_MS 300000

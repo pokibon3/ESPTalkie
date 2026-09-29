@@ -106,19 +106,32 @@ M5StickS3、M5AtomS3 + Atomic Echo Base、M5Paper Color、M5Stack StopWatch、M5
 - 丸型AMOLED（466x466）で使用します。
 - ボタン
   - 青ボタン（BtnB）: PTT。押している間送信、ダブルタップで連続送信のON/OFF
-  - 黄ボタン（BtnA）: 1秒長押しでSETUP画面の開閉（誤操作防止のため、メイン画面では短押しは無効）
-- メイン画面
-  - 中央に画像（`assets/stopwatch-dog.jpg`、240x240 JPEGをファームに埋め込み）を円形に切り抜いて表示
-  - 画像まわりのリングで状態表示: 青=待受、緑=受信中、赤=送信、橙=連続送信（上部に RECEIVE / RECEIVING / TRANSMIT / CONT TX）
-  - 左: RSSI（送信中は送信出力 dBm）と8段メーター、右: 電池残量（充電中は CHG）、下: CH / VOL / VOICE
+  - 黄ボタン（BtnA）: 短押しで時計の針を5秒間くっきり表示、1秒長押しでSETUP画面の開閉
+- メイン画面（アナログ時計）
+  - 中央に画像（`assets/stopwatch-dog.jpg`、398x398 JPEGをファームに埋め込み）を円形に表示
+  - 針は写真の上に半透明で表示（黄ボタン短押しで5秒間くっきり表示）。写真の外周部は少し暗くし、目盛・時/分の三角マーカー・秒の赤点を写真の上に表示
+  - 外周リング: 上=状態（RECEIVE 青 / RECEIVING 緑 / TRANSMIT 赤 / CONT TX 橙）、右=電池残量ゲージ、左=RSSI（送信中は送信出力）と8段メーター、下=CH / VOL / VOICE
+  - 画面全体をPSRAM上で合成して一括転送（ちらつきなし）。毎秒と状態変化時に更新
 - SETUP画面
-  - CHANNEL / VOLUME / VOICE（M1/M2/M3）
-  - 黄ボタン短押し: 項目切替、青ボタン短押し: 値＋1、タッチ: [−]/[＋]ボタン・項目行の選択
+  - CHANNEL / VOLUME / VOICE（M1/M2/M3）/ TIME / WIFI
+  - 黄ボタン短押し: 項目切替、青ボタン短押し: 値＋1（TIME・WIFIは実行）、タッチ: [−]/[＋]ボタン・項目行の選択
   - 15秒操作がないと自動でメイン画面に戻る。SETUP中は送信しない（連続送信も停止）
 - 着信通知: 無音（1.5秒以上）の後に受信が始まると、振動モーターを「ブブブ」と3回動作（自局送信中は動作しない）
-  - 強さ・パターンは `config.h` の `STOPWATCH_VIBRATION_*` で調整、SETUP長押し時間・自動復帰時間は `STOPWATCH_SETUP_*`
+- 時計・時刻同期
+  - 時刻は内蔵RTC（RX8130CE、UTCで保持）で刻み、`STOPWATCH_TZ`（既定 `JST-9`）で表示
+  - 起動時、RTCの時刻が有効（VLFフラグ=0、日時が正常、ファームのビルド日以降）で、最後のNTP同期から1日以内（`STOPWATCH_NTP_INTERVAL_S`）なら同期を省略
+  - それ以外は起動時にWi-Fiに接続してNTP（`ntp.nict.jp` / `pool.ntp.org`）で同期し、RTCに書き込む（接続待ち最大10秒。失敗してもRTCの時刻で動作を継続し、RTCも無効なら時計は非表示）
+  - SETUPのTIMEで手動同期（結果を OK / FAIL / NO WIFI 表示）
+  - 同期後はすぐ切断し、ESP-NOWのチャンネルとLRモードに戻る
+- Wi-Fi設定（SETUP > WIFI）
+  1. ウォッチが自分のAP（`ESPTalkie-xxxx`、パスワードは毎回ランダムな8桁）を起動し、接続用QRコードを表示
+  2. スマホでQRを読み込むとAPに接続し、設定ページが自動で開く（開かない場合は画面が `http://192.168.4.1/` のQRに切替）
+  3. 周辺APの一覧から選択（または入力）し、パスワードを入れて Save → NVSに保存し、続けて時刻同期
+  - 黄ボタンで中止、5分で自動終了
+  - 予備として `src/wifi_secrets.h`（`src/wifi_secrets.h.example` をコピー、git管理外）にSSID/パスワードを書いてビルドすることも可能
+- 調整項目（`config.h`）: `STOPWATCH_HANDS_ALPHA`（針の透明度）、`STOPWATCH_HANDS_CLEAR_MS`、`STOPWATCH_SHOW_SECONDS`、`STOPWATCH_VIBRATION_*`、`STOPWATCH_SETUP_*`、`STOPWATCH_NTP_*`
 - ビルド環境: `espressif32@6.12.0`（Arduino core 2.x）、M5Unified 0.2.23以降（StopWatch対応版）。16MB Flash / 8MB OPI PSRAM
-- 画像を差し替える場合は `assets/stopwatch-dog.jpg`（240x240 のJPEG）を置き換えてビルドします
+- 画像を差し替える場合は `assets/stopwatch-dog.jpg`（398x398 のJPEG）を置き換えてビルドします
 
 ### M5Stack Tab5
 - 縦持ち（720x1280）で使用します。
@@ -152,6 +165,7 @@ M5StickS3、M5AtomS3 + Atomic Echo Base、M5Paper Color、M5Stack StopWatch、M5
 - v1.5: M5Paper Color対応（名札表示・設定画面・LED表示）、連続送信、受信優先/割り込み送信制御、PaperColor用ネックストラップケース
 - v1.6: M5Stack Tab5対応（C6経由のESP-NOW、タッチ操作、全画面画像、SETUP画面、チャンネルスキャン）
 - v1.7: M5Stack StopWatch対応（丸型AMOLED・円形画像表示、青ボタンPTT、黄ボタン長押しSETUP、着信バイブレーション）
+- v1.8: M5Stack StopWatchをアナログ時計画面に変更（写真拡大・半透明の針・外周リング表示）、RTC＋NTP時刻同期、スマホからのWi-Fi設定（QRコード）
 
 ## ライセンス
 　MIT License
