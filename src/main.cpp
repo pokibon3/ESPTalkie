@@ -11,6 +11,8 @@
 #include "DisplaySync.h"
 #include "PaperColorUi.h"
 #include "StopWatchUi.h"
+#include "TimeSync.h"
+#include "WifiSetup.h"
 #include "Tab5Ui.h"
 #include "UiLayout.h"
 #include "config.h"
@@ -455,6 +457,25 @@ void stopwatch_apply_delta(int delta)
             application->setSpeakerVolume(current_speaker_gain());
             prefs.putInt("volume", volume_level);
             break;
+        case StopWatchSetupItem::Wifi: {
+            // +/- on WIFI = enter the home AP from a phone (QR code)
+            const bool saved = wifi_setup_run(channel);
+            stopwatch_ui_show_setup(true);  // back to SETUP, WIFI still selected
+            if (saved) {
+                stopwatch_ui_set_selected_item(StopWatchSetupItem::Time);
+                stopwatch_ui_set_time_message("SYNC...");
+                const bool ok = time_sync_ntp(true, channel);
+                stopwatch_ui_set_time_message(ok ? "OK" : "FAIL");
+            }
+            return;
+        }
+        case StopWatchSetupItem::Time: {
+            // +/- on TIME = NTP sync now
+            stopwatch_ui_set_time_message("SYNC...");
+            const bool ok = time_sync_ntp(true, channel);
+            stopwatch_ui_set_time_message(ok ? "OK" : (time_sync_available() ? "FAIL" : "NO WIFI"));
+            return;
+        }
         case StopWatchSetupItem::Voice:
         default:
             tx_pitch_mode = static_cast<uint8_t>(wrapped_step(
@@ -472,11 +493,13 @@ void stopwatch_apply_delta(int delta)
 void stopwatch_loop()
 {
     // Blue (BtnB) = PTT on the main screen (read by the PTT task).
-    // Yellow (BtnA) long press = open / close SETUP (short presses are ignored
-    // on the main screen, so a bump can't change anything).
+    // Yellow (BtnA) long press = open / close SETUP (a short press only shows
+    // the clock hands, so a bump can't change anything).
     // In SETUP: yellow click = next item, blue click = +1, touch [-]/[+]/row.
+    // On the main screen a yellow click shows the clock hands clearly.
     static uint32_t last_input_ms = 0;
-    const uint32_t now = millis();
+    static uint32_t time_msg_ms = 0;
+    uint32_t now = millis();
 
     stopwatch_ui_service(application->getLastRxMs());
 
@@ -488,7 +511,11 @@ void stopwatch_loop()
         return;
     }
 
-    if (stopwatch_ui_setup_visible()) {
+    if (!stopwatch_ui_setup_visible()) {
+        if (M5.BtnA.wasClicked()) {
+            stopwatch_ui_show_hands();
+        }
+    } else {
         int delta = 0;
         if (M5.BtnA.wasClicked()) {
             const uint8_t next = static_cast<uint8_t>(
@@ -515,12 +542,30 @@ void stopwatch_loop()
                 stopwatch_ui_set_selected_item(StopWatchSetupItem::Voice);
                 last_input_ms = now;
                 break;
+            case StopWatchTouch::SelectTime:
+                stopwatch_ui_set_selected_item(StopWatchSetupItem::Time);
+                last_input_ms = now;
+                break;
+            case StopWatchTouch::SelectWifi:
+                stopwatch_ui_set_selected_item(StopWatchSetupItem::Wifi);
+                last_input_ms = now;
+                break;
             default:
                 break;
         }
         if (delta != 0) {
+            const bool time_item = stopwatch_ui_selected_item() == StopWatchSetupItem::Time ||
+                                   stopwatch_ui_selected_item() == StopWatchSetupItem::Wifi;
             stopwatch_apply_delta(delta);
+            now = millis();  // NTP sync may have blocked for a while
             last_input_ms = now;
+            if (time_item) {
+                time_msg_ms = now;
+            }
+        }
+        if (time_msg_ms != 0 && now - time_msg_ms >= 2000) {
+            time_msg_ms = 0;
+            stopwatch_ui_set_time_message(nullptr);
         }
         if (now - last_input_ms >= STOPWATCH_SETUP_TIMEOUT_MS) {
             stopwatch_ui_show_setup(false);
@@ -621,6 +666,14 @@ void setup()
         }
     });
 #elif TALKIE_TARGET_M5STOPWATCH
+    time_sync_init();
+#if STOPWATCH_NTP_ON_BOOT
+    // Skip when the RTC holds a valid time synced within STOPWATCH_NTP_INTERVAL_S.
+    if (time_sync_available() && time_sync_needed()) {
+        stopwatch_ui_message("TIME SYNC...");
+        time_sync_ntp(false, channel);
+    }
+#endif
     stopwatch_ui_begin(channel, volume_level, tx_pitch_mode);
 #elif !PTT_LOCAL_PLAYBACK_TEST_MODE && !TALKIE_TARGET_M5PAPERCOLOR
     draw_layout();
